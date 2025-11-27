@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      background: linear-gradient(135deg, #0F3443  0%, #34E89E 100%);
+      color: white;
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 15px;
+    }
+    
+    .header h1 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 600;
+    }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    
+    .stat-card {
+      background: rgba(255, 255, 255, 0.15);
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+      backdrop-filter: blur(10px);
+    }
+    
+    .stat-number {
+      font-size: 24px;
+      font-weight: bold;
+      display: block;
+    }
+    
+    .stat-label {
+      font-size: 12px;
+      opacity: 0.9;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .recent-activity {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+    
+    .recent-activity h3 {
+      margin: 0 0 8px 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    
+    .activity-item {
+      font-size: 12px;
+      margin: 4px 0;
+      opacity: 0.9;
+    }
+    
+    .controls {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .btn {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .btn-primary {
+      background: #4CAF50;
+      color: white;
+    }
+    
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+    }
+    
+    .btn:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+    
+    .loading {
+      text-align: center;
+      font-style: italic;
+      opacity: 0.7;
+    }
+    
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    
+    .status-active {
+      background: #4CAF50;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Scroll Tracker</h1>
+    <div id="status">
+      <span class="status-indicator status-active"></span>
+      <span>Tracking Active</span>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <span class="stat-number" id="totalTime">-</span>
+      <span class="stat-label">Total Minutes</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-number" id="totalSessions">-</span>
+      <span class="stat-label">YouTube Opens</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-number" id="avgDuration">-</span>
+      <span class="stat-label">Avg Duration</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-number" id="videoClicks">-</span>
+      <span class="stat-label">Videos Clicked</span>
+    </div>
+  </div>
+
+  <div class="recent-activity">
+    <h3>Recent Activity</h3>
+    <div id="recentList">
+      <div class="loading">Loading data...</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-secondary" id="clearData">Clear Data</button>
+    <button class="btn btn-primary" id="exportData">Export CSV</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
