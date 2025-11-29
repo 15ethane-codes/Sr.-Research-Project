@@ -1,49 +1,73 @@
 import pandas as pd
-from pgmpy.models import BayesianNetwork
-from pgmpy.estimators import MaximumLikelihoodEstimator, VariableElimination
+from pgmpy.models import DiscreteBayesianNetwork
+from pgmpy.estimators import MaximumLikelihoodEstimator
+from pgmpy.inference import VariableElimination
+import os
 
-data = pd.read_csv('scroll_data.csv')
+# Get current working directory
+cwd = os.getcwd()
+print("Current working directory:", cwd)
 
-def classify_scroll_rate(scrolls, duration):
-    rate = scrolls / (duration+1e-6)
-    if rate > 30:
-        return 'high'
-    elif rate > 10:
-        return 'medium'
-    else:
-        return 'low'
-    
-def classify_click_rate(clicks, duration):
-    rate = clicks / (duration+1e-6)
-    if rate > 2:
-        return 'high'
-    elif rate > 0.5:
-        return 'medium'
-    else:
-        return 'low'
+file_path = os.path.join(cwd, "Model_Training", "session_data.csv")
+print("Full path to CSV:", file_path)
 
-def classify_duration(duration):
-    if duration > 30:
-        return 'long'
-    elif duration > 10:
-        return 'medium'
-    else:
-        return 'short'
-    
-data['ScrollRate'] = data.apply(lambda row: classify_scroll_rate(row['TotalScrolls'], row['Duration']), axis=1)
-data['ClickRate'] = data.apply(lambda row: classify_click_rate(row['TotalClicks'], row['Duration']), axis=1)
-data['SessionLength'] = data['Duration'].apply(classify_duration)
+if os.path.isfile(file_path):
+    print("File found! Loading now...")
+    df = pd.read_csv(file_path)
+    print("CSV loaded successfully.")
+else:
+    raise FileNotFoundError("CSV file not found. Check filename and folder.")
 
-data['Doomscrolling'] = data.apply(lambda row: 'yes' if row['ScrollRate'] == 'high' and row['SessionLength'] == 'long' else 'no', axis=1)
+# Feature engineering
+df['ScrollRate'] = df.apply(lambda row: (
+    'high' if row['Scroll Events Count'] / (row['Duration (minutes)'] + 1e-6) > 30 else
+    'medium' if row['Scroll Events Count'] / (row['Duration (minutes)'] + 1e-6) > 10 else 'low'
+), axis=1)
 
-model = BayesianNetwork([('ScrollRate', 'Doomscrolling'), ('ClickRate', 'Doomscrolling'), ('SessionLength', 'Doomscrolling')])
+df['ClickRate'] = df.apply(lambda row: (
+    'high' if row['Total Clicks'] / (row['Duration (minutes)'] + 1e-6) > 2 else
+    'medium' if row['Total Clicks'] / (row['Duration (minutes)'] + 1e-6) > 0.5 else 'low'
+), axis=1)
 
-model.fit(data, estimator=MaximumLikelihoodEstimator)
+df['SessionLength'] = df['Duration (minutes)'].apply(lambda d: 'long' if d > 30 else 'medium' if d > 10 else 'short')
+
+# Map manually - labeled column to 'yes'/'no' for consistency
+df['Doomscrolling'] = df['doomscroll_label'].map({1: 'yes', 0: 'no'})
+
+model = DiscreteBayesianNetwork([
+    ('ScrollRate', 'Doomscrolling'),
+    ('ClickRate', 'Doomscrolling'),
+    ('SessionLength', 'Doomscrolling')
+])
+
+model.fit(df, estimator=MaximumLikelihoodEstimator)
 inference = VariableElimination(model)
-query = inference.query(variables=['Doomscrolling'], evidence={'ScrollRate': 'high', 'ClickRate': 'low', 'SessionLength': 'long'})
 
-print(query)
+# Example query
+query_result = inference.query(
+    variables=['Doomscrolling'],
+    evidence={'ScrollRate': 'high', 'ClickRate': 'low', 'SessionLength': 'long'}
+)
+print("Query result for ScrollRate=high, ClickRate=low, SessionLength=long:")
+print(query_result)
 
 for cpd in model.get_cpds():
-    print("CDP of {variable}:".format(variable=cpd.variable))
+    print(f"CPD of {cpd.variable}:")
     print(cpd)
+
+result = inference.query(
+    variables=['Doomscrolling'],
+    evidence={'ScrollRate': 'high', 'ClickRate': 'low', 'SessionLength': 'long'}
+)
+print(result)
+
+# Error
+with open("cpds.txt", "w") as f:
+    for cpd in model.get_cpds():
+        f.write(f"CPD of {cpd.variable}:\n")
+        f.write(str(cpd))
+        f.write("\n\n")
+
+for cpd in model.get_cpds():
+    df_cpd = pd.DataFrame(cpd.values, index=cpd.state_names[cpd.variable])
+    df_cpd.to_csv(f"{cpd.variable}_cpd.csv")
