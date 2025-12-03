@@ -61,13 +61,10 @@ result = inference.query(
 )
 print(result)
 
-# Error
+# Save CPDs to a text file
 with open("cpds.txt", "w") as f:
     for cpd in model.get_cpds():
         f.write(f"CPD of {cpd.variable}:\n")
         f.write(str(cpd))
         f.write("\n\n")
 
-for cpd in model.get_cpds():
-    df_cpd = pd.DataFrame(cpd.values, index=cpd.state_names[cpd.variable])
-    df_cpd.to_csv(f"{cpd.variable}_cpd.csv")

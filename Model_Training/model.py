@@ -1,125 +1,126 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split, cross_val_score, LeaveOneOut, KFold
+from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import classification_report, roc_auc_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
 
-# Get current working directory
 cwd = os.getcwd()
-print("Current working directory:", cwd)
-
-# Build path to your CSV file
 file_path = os.path.join(cwd, "Model_Training", "session_data.csv")
-print("Full path to CSV:", file_path)
+df = pd.read_csv(file_path)
 
-if os.path.isfile(file_path):
-    print("File found! Loading now...")
-    df = pd.read_csv(file_path)
-    print("CSV loaded successfully.")
-else:
-    print("File not found. Check the filename and folder.")
-
-# To track
-print("Loading dataset...")
-df = pd.read_csv(file_path) 
-
-print(f"Total Sessions: {len(df)}")
-print("\nData preview:")
+print("Dataset loaded:", len(df), "sessions")
 print(df.head())
 
-#Stats
-print(df.describe())
-print(df.isnull().sum())
+# Feature Engineering
 
-#Engineer Features
 df['Scroll Intensity (px/min)'] = df['Total Scroll Distance'] / df['Duration (minutes)']
 df['Click Rate (clicks/min)'] = df['Total Clicks'] / df['Duration (minutes)']
-df['Scroll per Click'] = df['Total Scroll Distance'] / df['Total Clicks'].replace(0,1)
-df['Avg Scroll Speed (px/event)'] = df['Total Scroll Distance'] / df['Scroll Events Count'].replace(0,1)
+df['Scroll per Click'] = df['Total Scroll Distance'] / df['Total Clicks'].replace(0, 1)
+df['Avg Scroll Speed (px/event)'] = df['Total Scroll Distance'] / df['Scroll Events Count'].replace(0, 1)
+
 df['Engagement Score'] = df.apply(
-    lambda row: (row['Total Clicks'] * 1000 / row['Total Scroll Distance']) if row['Total Scroll Distance'] > 0 else 0,
+    lambda row: (row['Total Clicks'] * 1000 / row['Total Scroll Distance']) 
+                if row['Total Scroll Distance'] > 0 else 0,
     axis=1
 )
 
-# Select features for ML
-feature_columns = [
-    'Duration (minutes)',
-    'Total Scroll Distance',
-    'Total Clicks',
-    'Scroll Events Count',
-    'Scroll Intensity (px/min)',   # scroll distance / duration
-    'Click Rate (clicks/min)',     # clicks / duration
-    'Scroll per Click',            # scroll events / clicks
-    'Avg Scroll Speed (px/event)', # scroll distance / scroll events
-    'Engagement Score'             # clicks * 1000 / scroll distance
-]
-
-
-X = df[feature_columns]
 
 df['is_doomscrolling'] = (
-    (df['Duration (minutes)'] > 15) & 
-    (df['Engagement Score'] < 0.5) & 
+    (df['Duration (minutes)'] > 15) &
+    (df['Engagement Score'] < 0.5) &
     (df['Scroll Intensity (px/min)'] > 1000)
 ).astype(int)
 
 y = df['is_doomscrolling']
 
-print(f"\nDoomscrolling sessions: {y.sum()} ({y.sum()/len(y)*100:.1f}%)")
-print(f"Focused sessions: {len(y)-y.sum()} ({(len(y)-y.sum())/len(y)*100:.1f}%)")
+feature_columns = [
+    'Duration (minutes)',
+    'Total Scroll Distance',
+    'Total Clicks',
+    'Scroll Events Count',
+    'Scroll Intensity (px/min)',
+    'Click Rate (clicks/min)',
+    'Scroll per Click',
+    'Avg Scroll Speed (px/event)',
+    'Engagement Score'
+]
 
-# Check if we have enough data (P.s: I don't)
+X = df[feature_columns]
 
-# Split data
+print("\nLabel distribution:")
+print(y.value_counts(normalize=True))
+
+#Training
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+# Logistic Regression Pipeline
+lr_pipeline = Pipeline([
+    ("scaler", StandardScaler()),
+    ("lr", LogisticRegression(max_iter=1000))
+])
 
-print(f"\nTraining set: {len(X_train)} sessions")
-print(f"Test set: {len(X_test)} sessions")
+lr_pipeline.fit(X_train, y_train)
+lr_pred = lr_pipeline.predict(X_test)
+lr_proba = lr_pipeline.predict_proba(X_test)[:, 1]
 
-#Training
-lr_model = LogisticRegression(random_state=42, max_iter=1000)
-lr_model.fit(X_train_scaled, y_train)
+print("\n=== Logistic Regression Test Results ===")
+print(classification_report(y_test, lr_pred))
+print("ROC-AUC:", roc_auc_score(y_test, lr_proba))
 
-lr_pred = lr_model.predict(X_test_scaled)
-lr_pred_proba = lr_model.predict_proba(X_test_scaled)[:, 1]
+# Cross-validation
+lr_cv = cross_val_score(lr_pipeline, X, y, cv=5)
+print("\nLR 5-Fold Accuracy:", lr_cv.mean(), lr_cv.std())
 
-print("\nLogistic Regression Results:")
-print(classification_report(y_test, lr_pred, target_names=['Focused', 'Doomscrolling']))
-print(f"ROC-AUC Score: {roc_auc_score(y_test, lr_pred_proba):.3f}")
+rf_pipeline = Pipeline([
+    ("scaler", StandardScaler()),
+    ("rf", RandomForestClassifier(n_estimators=200, random_state=42))
+])
 
-cv_scores = cross_val_score(lr_model, X_train_scaled, y_train, cv=5)
-print(f"Cross-validation accuracy: {cv_scores.mean():.3f} (+/- {cv_scores.std():.3f})")
+# Random Forest Training and Evaluation
+rf_pipeline.fit(X_train, y_train)
+rf_pred = rf_pipeline.predict(X_test)
+rf_proba = rf_pipeline.predict_proba(X_test)[:, 1]
 
-#Random Forest
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-rf_model.fit(X_train_scaled, y_train)
+print("\n Random Forest Test Results")
+print(classification_report(y_test, rf_pred))
+print("ROC-AUC:", roc_auc_score(y_test, rf_proba))
 
-rf_pred = rf_model.predict(X_test_scaled)
-rf_pred_proba = rf_model.predict_proba(X_test_scaled)[:, 1]
+rf_cv = cross_val_score(rf_pipeline, X, y, cv=5)
+print("\nRF 5-Fold Accuracy:", rf_cv.mean(), rf_cv.std())
 
-print("\nRandom Forest Results:")
-print(classification_report(y_test, rf_pred, target_names=['Focused', 'Doomscrolling']))
-print(f"ROC-AUC Score: {roc_auc_score(y_test, rf_pred_proba):.3f}")
+# K-Fold Comparison (RF)
+kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+kfold_scores = cross_val_score(rf_pipeline, X, y, cv=kfold)
+print("\nK-Fold RF:", kfold_scores, "Mean:", kfold_scores.mean())
 
+# LOOCV (RF)
+loo = LeaveOneOut()
+loo_scores = cross_val_score(rf_pipeline, X, y, cv=loo)
+print("\nLOOCV RF Mean:", loo_scores.mean())
+
+rf_pipeline.fit(X, y)
+rf_model = rf_pipeline.named_steps["rf"]
+
+importances = rf_model.feature_importances_
 feature_importance = pd.DataFrame({
-    'feature': feature_columns,
-    'importance': rf_model.feature_importances_
-}).sort_values('importance', ascending=False)
+    "Feature": feature_columns,
+    "Importance": importances
+}).sort_values("Importance", ascending=False)
 
+print("\nFeature importance:")
 print(feature_importance)
 
-#Visualization
-plt.figure(figsize=(10, 6))
-sns.barplot(x='importance', y='feature', data=feature_importance)
+plt.figure(figsize=(8, 5))
+sns.barplot(data=feature_importance, x="Importance", y="Feature")
+plt.title("Feature Importance (Random Forest)")
+plt.tight_layout()
+plt.show()
