@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from pgmpy.models import DiscreteBayesianNetwork
 from pgmpy.estimators import MaximumLikelihoodEstimator
 from pgmpy.inference import VariableElimination
@@ -6,7 +7,7 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 import itertools
-
+from scipy.stats import ttest_ind
 
 cwd = os.getcwd()
 print("Current working directory:", cwd)
@@ -163,3 +164,23 @@ def get_prob_yes(row):
 
 df['Predicted_Prob_Yes'] = df.apply(get_prob_yes, axis=1)
 
+# Backup used to see agreement with hypothesis testing from final_model.py
+
+# Split predicted probabilities by true label
+focused_probs = df.loc[df['Doomscrolling'] == 'no', 'Predicted_Prob_Yes']
+doom_probs = df.loc[df['Doomscrolling'] == 'yes', 'Predicted_Prob_Yes']
+
+# T-test
+t_stat, p_val = ttest_ind(focused_probs, doom_probs, equal_var=False)
+
+# Cohen's d
+n1, n2 = len(focused_probs), len(doom_probs)
+s1, s2 = focused_probs.std(ddof=1), doom_probs.std(ddof=1)
+pooled_std = np.sqrt(((n1 - 1)*s1**2 + (n2 - 1)*s2**2) / (n1 + n2 - 2))
+cohen_d = (focused_probs.mean() - doom_probs.mean()) / pooled_std
+
+print("\nBayesian Model Predictions - T-test and Cohen's d")
+print(f"Focused mean probability: {focused_probs.mean():.3f}")
+print(f"Doomscroll mean probability: {doom_probs.mean():.3f}")
+print(f"t-statistic: {t_stat:.3f}, p-value: {p_val:.4f}")
+print(f"Cohen's d: {cohen_d:.3f}")
