@@ -1,26 +1,23 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, KFold, LeaveOneOut
+from sklearn.model_selection import KFold, LeaveOneOut
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+from sklearn.metrics import confusion_matrix, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-# 1. Load Dataset
+# --- 1. Load Dataset ---
 cwd = os.getcwd()
 file_path = os.path.join(cwd, "Model_Training", "session_data.csv")
-
 if not os.path.isfile(file_path):
     raise FileNotFoundError(f"CSV file not found at {file_path}")
 
 df = pd.read_csv(file_path)
-print(f"Total sessions: {len(df)}")
-print(df.head())
 
-# 2. Feature Engineering
+# --- 2. Feature Engineering ---
 df['Scroll Intensity (px/min)'] = df['Total Scroll Distance'] / df['Duration (minutes)']
 df['Click Rate (clicks/min)'] = df['Total Clicks'] / df['Duration (minutes)']
 df['Scroll per Click'] = df['Total Scroll Distance'] / df['Total Clicks'].replace(0,1)
@@ -44,162 +41,122 @@ feature_columns = [
 
 X = df[feature_columns]
 
-# Label: Doomscrolling
-df['is_doomscrolling'] = (
-    (df['Duration (minutes)'] > 15) & 
-    (df['Engagement Score'] < 0.5) & 
-    (df['Scroll Intensity (px/min)'] > 1000)
-).astype(int)
+# --- 3. Labels ---
+df['is_doomscrolling'] = df['doomscroll_label']
 y = df['is_doomscrolling']
 
 print(f"Doomscrolling sessions: {y.sum()} ({y.sum()/len(y)*100:.1f}%)")
 print(f"Focused sessions: {len(y)-y.sum()} ({(len(y)-y.sum())/len(y)*100:.1f}%)")
 
-# 3. Scale Features
+# --- 4. Scale Features ---
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
+X_scaled_df = pd.DataFrame(X_scaled, columns=feature_columns)
 
-# 4. Train Models
-lr_model = LogisticRegression(random_state=42, max_iter=1000)
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+# --- 5. Feature Importance ---
+def feature_importance_rank(X, y):
+    rf = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf.fit(X, y)
+    importance_df = pd.DataFrame({
+        'feature': X.columns,
+        'importance': rf.feature_importances_
+    }).sort_values('importance', ascending=False)
+    return importance_df
 
-lr_model.fit(X_scaled, y)
-rf_model.fit(X_scaled, y)
-
-# 5. Feature Importance (RF)
-feature_importance = pd.DataFrame({
-    'feature': feature_columns,
-    'importance': rf_model.feature_importances_
-}).sort_values('importance', ascending=False)
-
-print(feature_importance)
+importance_df = feature_importance_rank(X_scaled_df, y)
+print("Feature Importance:\n", importance_df)
 
 plt.figure(figsize=(10,6))
-sns.barplot(x='importance', y='feature', data=feature_importance)
+sns.barplot(x='importance', y='feature', data=importance_df)
 plt.title("Random Forest Feature Importance")
 plt.tight_layout()
 plt.show()
 
-# 6. Cross-Validation: Confusion & ROC
+# --- 6. Automated Feature Analysis ---
+def feature_summary(df, features, label='is_doomscrolling'):
+    summary = {}
+    for feature in features:
+        summary[feature] = {
+            'overall_mean': df[feature].mean(),
+            'overall_std': df[feature].std(),
+            'focused_mean': df[df[label]==0][feature].mean(),
+            'doom_mean': df[df[label]==1][feature].mean(),
+            'focused_std': df[df[label]==0][feature].std(),
+            'doom_std': df[df[label]==1][feature].std()
+        }
+    return pd.DataFrame(summary).T
+
+summary_df = feature_summary(df, feature_columns)
+print("Feature Summary:\n", summary_df)
+
+# Correlation filter
+def feature_correlation_filter(df, features, threshold=0.9):
+    corr_matrix = df[features].corr().abs()
+    to_drop = [col for col in corr_matrix.columns if any(corr_matrix[col] > threshold) and col not in corr_matrix.columns[:1]]
+    return to_drop
+
+to_drop = feature_correlation_filter(df, feature_columns)
+print("Highly correlated features to drop:", to_drop)
+
+# Drop correlated features
+X_filtered = X_scaled_df.drop(columns=to_drop)
+feature_columns_filtered = X_filtered.columns.tolist()
+
+# --- 7. Cross-Validation Functions ---
 def cross_val_confusion_roc(model, X, y, cv):
     cms, tprs, aucs = [], [], []
     mean_fpr = np.linspace(0,1,100)
-    
     for train_idx, test_idx in cv.split(X, y):
-        X_train, X_test = X[train_idx], X[test_idx]
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-        
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         y_proba = model.predict_proba(X_test)[:,1]
-        
         cms.append(confusion_matrix(y_test, y_pred))
-        
         fpr, tpr, _ = roc_curve(y_test, y_proba)
         tpr_interp = np.interp(mean_fpr, fpr, tpr)
         tpr_interp[0] = 0.0
         tprs.append(tpr_interp)
         aucs.append(auc(fpr, tpr))
-    
     mean_cm = np.mean(cms, axis=0)
     mean_tpr = np.mean(tprs, axis=0)
     mean_tpr[-1] = 1.0
     mean_auc = np.mean(aucs)
     return mean_cm, mean_fpr, mean_tpr, mean_auc
 
+# --- 8. Train & Evaluate Models ---
+lr_model = LogisticRegression(random_state=42, max_iter=1000)
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+
 # 5-Fold CV
 kf = KFold(n_splits=5, shuffle=True, random_state=42)
-rf_cm_5fold, rf_fpr_5, rf_tpr_5, rf_auc_5 = cross_val_confusion_roc(rf_model, X_scaled, y, kf)
+rf_cm_5fold, rf_fpr_5, rf_tpr_5, rf_auc_5 = cross_val_confusion_roc(rf_model, X_filtered, y, kf)
+lr_cm_5fold, lr_fpr_5, lr_tpr_5, lr_auc_5 = cross_val_confusion_roc(lr_model, X_filtered, y, kf)
 
-plt.figure(figsize=(5,4))
-sns.heatmap(rf_cm_5fold, annot=True, fmt=".1f", cmap='Greens',
-            xticklabels=['Focused','Doomscrolling'], yticklabels=['Focused','Doomscrolling'])
-plt.title("Random Forest 5-Fold CV Confusion Matrix")
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.show()
-
-plt.figure(figsize=(6,5))
-plt.plot(rf_fpr_5, rf_tpr_5, label=f'Random Forest 5-Fold (AUC={rf_auc_5:.2f})')
-plt.plot([0,1],[0,1],'k--')
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('ROC Curve (5-Fold CV)')
-plt.legend()
-plt.show()
+print("Random Forest 5-Fold AUC:", rf_auc_5)
+print("Logistic Regression 5-Fold AUC:", lr_auc_5)
 
 # LOOCV
+from sklearn.model_selection import LeaveOneOut
 loo = LeaveOneOut()
-y_true, y_pred, y_proba = [], [], []
+def loo_eval(model, X, y):
+    y_true, y_pred, y_proba = [], [], []
+    for train_idx, test_idx in loo.split(X, y):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+        proba = model.predict_proba(X_test)[:,1]
+        y_true.append(y_test.values[0])
+        y_pred.append(pred[0])
+        y_proba.append(proba[0])
+    cm = confusion_matrix(y_true, y_pred)
+    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    roc_auc = auc(fpr, tpr)
+    return cm, fpr, tpr, roc_auc
 
-for train_idx, test_idx in loo.split(X_scaled, y):
-    X_train, X_test = X_scaled[train_idx], X_scaled[test_idx]
-    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-    
-    rf_model.fit(X_train, y_train)
-    pred = rf_model.predict(X_test)
-    proba = rf_model.predict_proba(X_test)[:,1]
-    
-    y_true.append(y_test.values[0])
-    y_pred.append(pred[0])
-    y_proba.append(proba[0])
+rf_loo_cm, rf_loo_fpr, rf_loo_tpr, rf_loo_auc = loo_eval(rf_model, X_filtered, y)
+lr_loo_cm, lr_loo_fpr, lr_loo_tpr, lr_loo_auc = loo_eval(lr_model, X_filtered, y)
 
-loo_cm = confusion_matrix(y_true, y_pred)
-fpr, tpr, _ = roc_curve(y_true, y_proba)
-roc_auc = auc(fpr, tpr)
-
-plt.figure(figsize=(5,4))
-sns.heatmap(loo_cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=['Focused', 'Doomscrolling'],
-            yticklabels=['Focused', 'Doomscrolling'])
-plt.xlabel('Predicted')
-plt.ylabel('True')
-plt.title('Random Forest LOOCV Confusion Matrix')
-plt.show()
-
-plt.figure(figsize=(6,5))
-plt.plot(fpr, tpr, label=f'Random Forest LOOCV (AUC={roc_auc:.2f})')
-plt.plot([0,1],[0,1],'k--')
-plt.xlabel('FPR')
-plt.ylabel('TPR')
-plt.title('ROC Curve (LOOCV)')
-plt.legend()
-plt.show()
-
-# 7. Exploratory Data Analysis
-  # Histograms per feature
-for feature in feature_columns:
-    plt.figure(figsize=(6,4))
-    sns.histplot(df, x=feature, hue='is_doomscrolling', kde=True, element="step", stat="density")
-    plt.title(f"Distribution of {feature} by Label")
-    plt.show()
-
-# Correlation Matrix
-plt.figure(figsize=(10,8))
-corr = df[feature_columns + ['is_doomscrolling']].corr()
-sns.heatmap(corr, annot=True, cmap="coolwarm")
-plt.title("Correlation Matrix")
-plt.show()
-
-# Pairplot for key features
-sns.pairplot(df, vars=['Duration (minutes)','Engagement Score','Scroll Intensity (px/min)'],
-             hue='is_doomscrolling', corner=True)
-plt.show()
-
-# 8. To-do Analyze Feature Importance
-# Comments: Feature importance already analyzed above using Random Forest - Total Scroll Distance, Total Clicks, and Scroll Events Count are top features.
-corr_matrix = df[feature_columns].corr()
-plt.figure(figsize=(10,8))
-sns.heatmap(corr_matrix, annot=True, cmap="coolwarm")
-plt.title("Feature Correlation Matrix")
-plt.show()
-
-for feature in feature_columns:
-    plt.figure(figsize=(6,4))
-    sns.kdeplot(data=df, x=feature, hue='is_doomscrolling', common_norm=False)
-    plt.title(f"{feature} distribution by label")
-    plt.show()
-
-# Example: Log transform skewed features
-df['Log_Total_Scroll'] = np.log1p(df['Total Scroll Distance'])
-df['Log_Engagement_Score'] = np.log1p(df['Engagement Score'])
+print("Random Forest LOOCV AUC:", rf_loo_auc)
+print("Logistic Regression LOOCV AUC:", lr_loo_auc)
