@@ -8,6 +8,7 @@ from sklearn.metrics import confusion_matrix, roc_curve, auc, roc_auc_score, cla
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+from scipy.stats import ttest_ind
 
 # 1. Load Dataset
 cwd = os.getcwd()
@@ -187,3 +188,25 @@ plot_roc(rf_fpr_loo, rf_tpr_loo, rf_auc_loo, "Random Forest LOOCV ROC")
 
 plot_cm(lr_cm_loo, "Logistic Regression LOOCV")
 plot_roc(lr_fpr_loo, lr_tpr_loo, lr_auc_loo, "Logistic Regression LOOCV ROC")
+
+# 12. T-tests & Cohen's d for hypothesis testing
+def cohen_d(x1, x2):
+    """Compute Cohen's d for two independent samples."""
+    n1, n2 = len(x1), len(x2)
+    s1, s2 = np.var(x1, ddof=1), np.var(x2, ddof=1)
+    pooled_std = np.sqrt(((n1-1)*s1 + (n2-1)*s2) / (n1 + n2 - 2))
+    return (np.mean(x1) - np.mean(x2)) / pooled_std
+
+print("\n--- T-tests and Cohen's d ---")
+for feature in top_features:
+    focused_vals = df[df['is_doomscrolling']==0][feature]
+    doom_vals = df[df['is_doomscrolling']==1][feature]
+    
+    t_stat, p_val = ttest_ind(focused_vals, doom_vals, equal_var=False)
+    d_val = cohen_d(focused_vals, doom_vals)
+    
+    print(f"\nFeature: {feature}")
+    print(f"  Focused mean: {focused_vals.mean():.3f}, Doom mean: {doom_vals.mean():.3f}")
+    print(f"  t-statistic: {t_stat:.3f}, p-value: {p_val:.4f}")
+    print(f"  Cohen's d: {d_val:.3f}")
+
