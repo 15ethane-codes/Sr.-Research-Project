@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-# --- 1. Load Dataset ---
+# 1. Load Dataset
 cwd = os.getcwd()
 file_path = os.path.join(cwd, "Model_Training", "session_data.csv")
 if not os.path.isfile(file_path):
@@ -17,7 +17,7 @@ if not os.path.isfile(file_path):
 
 df = pd.read_csv(file_path)
 
-# --- 2. Feature Engineering ---
+# 2. Feature Engineering
 df['Scroll Intensity (px/min)'] = df['Total Scroll Distance'] / df['Duration (minutes)']
 df['Click Rate (clicks/min)'] = df['Total Clicks'] / df['Duration (minutes)']
 df['Scroll per Click'] = df['Total Scroll Distance'] / df['Total Clicks'].replace(0,1)
@@ -41,19 +41,19 @@ feature_columns = [
 
 X = df[feature_columns]
 
-# --- 3. Labels ---
+# 3. Labels
 df['is_doomscrolling'] = df['doomscroll_label']
 y = df['is_doomscrolling']
 
 print(f"Doomscrolling sessions: {y.sum()} ({y.sum()/len(y)*100:.1f}%)")
 print(f"Focused sessions: {len(y)-y.sum()} ({(len(y)-y.sum())/len(y)*100:.1f}%)")
 
-# --- 4. Scale Features ---
+# 4. Scale Features
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 X_scaled_df = pd.DataFrame(X_scaled, columns=feature_columns)
 
-# --- 5. Feature Importance ---
+# 5. Feature Importance
 def feature_importance_rank(X, y):
     rf = RandomForestClassifier(n_estimators=100, random_state=42)
     rf.fit(X, y)
@@ -72,7 +72,7 @@ plt.title("Random Forest Feature Importance")
 plt.tight_layout()
 plt.show()
 
-# --- 6. Automated Feature Analysis ---
+# 6. Automated Feature Analysis
 def feature_summary(df, features, label='is_doomscrolling'):
     summary = {}
     for feature in features:
@@ -102,7 +102,7 @@ print("Highly correlated features to drop:", to_drop)
 X_filtered = X_scaled_df.drop(columns=to_drop)
 feature_columns_filtered = X_filtered.columns.tolist()
 
-# --- 7. Cross-Validation Functions ---
+# 7. Cross-Validation Functions
 def cross_val_confusion_roc(model, X, y, cv):
     cms, tprs, aucs = [], [], []
     mean_fpr = np.linspace(0,1,100)
@@ -124,7 +124,7 @@ def cross_val_confusion_roc(model, X, y, cv):
     mean_auc = np.mean(aucs)
     return mean_cm, mean_fpr, mean_tpr, mean_auc
 
-# --- 8. Train & Evaluate Models ---
+# 8. Train & Evaluate Models
 lr_model = LogisticRegression(random_state=42, max_iter=1000)
 rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
 
