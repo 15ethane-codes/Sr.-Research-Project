@@ -210,3 +210,8 @@ for feature in top_features:
     print(f"  t-statistic: {t_stat:.3f}, p-value: {p_val:.4f}")
     print(f"  Cohen's d: {d_val:.3f}")
 
+# End of final_model.py (Needed for script conversion)
+print("LR Coefs:", lr_model.coef_)
+print("LR Intercept:", lr_model.intercept_)
+print("Scaler means:", scaler.mean_)
+print("Scaler std:", scaler.scale_)
