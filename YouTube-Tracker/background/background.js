@@ -236,6 +236,8 @@ function showSuggestionNudge(sessionData, signals, durationMinutes) {
 
 // Level 3: Scroll resistance (high friction)
 function activateScrollResistance(sessionData, durationMinutes) {
+  console.log('LEVEL 3 TRIGGERED', durationMinutes);
+
   sendToActiveTab({
     action: 'activateScrollResistance',
     duration: Math.round(durationMinutes),
