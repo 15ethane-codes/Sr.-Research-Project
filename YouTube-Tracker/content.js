@@ -1,62 +1,72 @@
+// console.log when script loads
 console.log('YouTube Scrolling Tracker loaded');
 
-// Notify background that content script is ready for messages
-let contentReady = false;
+// import ML prediction (not used in content script yet)
+import { predictDoomscrollProbability } from './model.js';
 
+// ---- READY HANDSHAKE ----
+// Notify background script that content script is ready
+let contentReady = false;
 browser.runtime.sendMessage({ action: 'contentReady' }).then(() => {
   contentReady = true;
   console.log('Content script ready for nudges');
 });
 
-// Safety check: Only run on YouTube
+// ---- DOMAIN CHECK ----
+// Only run on YouTube domain
 if (!window.location.hostname.includes('youtube.com')) {
   console.log('Not on YouTube, script will not track');
   throw new Error('Not on YouTube domain');
 }
 
+// ---- INITIAL STATE ----
 let scrollData = {
-  startTime: Date.now(),
-  sessionId: 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-  scrollEvents: [],
-  videoClicks: 0,
-  shortsClicks: 0,
-  totalScrollDistance: 0,
-  lastScrollPosition: 0,
-  videoInteractions: [],
-  currentVideo: null,
-  currentContext: 'unknown',
-  timeInShorts: 0,
-  timeWatchingVideo: 0,
-  lastContextChange: Date.now()
+  startTime: Date.now(), // session start timestamp
+  sessionId: 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9), // unique session ID
+  scrollEvents: [], // array of scroll events
+  videoClicks: 0, // count of regular video clicks
+  shortsClicks: 0, // count of Shorts clicks
+  totalScrollDistance: 0, // total scroll distance tracked
+  lastScrollPosition: 0, // previous scroll position
+  videoInteractions: [], // detailed video/short interactions
+  currentVideo: null, // current video ID
+  currentContext: 'unknown', // current page context
+  timeInShorts: 0, // cumulative time in Shorts
+  timeWatchingVideo: 0, // cumulative time watching videos
+  lastContextChange: Date.now() // last time context changed
 };
 
-// Scroll tracking
-let scrollTimeout;
-let isActivelyScrolling = false;
-let scrollPauseCount = 0;
-let lastScrollSaveTime = Date.now();
+// ---- SCROLL TRACKING ----
+let scrollTimeout; // timeout to detect scroll pause
+let isActivelyScrolling = false; // whether user is actively scrolling
+let scrollPauseCount = 0; // number of scroll pauses detected
+let lastScrollSaveTime = Date.now(); // last timestamp scroll was saved
 
+// Function to save meaningful scroll events
+function saveScrollEvent(distance, y = window.scrollY) {
+  const t = Date.now();
+  if (distance > 50 || t - lastScrollSaveTime > 500) {
+    scrollData.scrollEvents.push({ timestamp: t, scrollY: y, scrollDistance: distance });
+    lastScrollSaveTime = t;
+  }
+}
+
+// ---- WINDOW SCROLL EVENT ----
 window.addEventListener('scroll', () => {
   const currentTime = Date.now();
   const scrollY = window.scrollY;
   const scrollDistance = Math.abs(scrollY - scrollData.lastScrollPosition);
-  
+
   isActivelyScrolling = true;
 
-  // Save meaningful scroll events
-  if (scrollDistance > 50 || (currentTime - lastScrollSaveTime) > 500) {
-    scrollData.scrollEvents.push({
-      timestamp: currentTime,
-      scrollY: scrollY,
-      scrollDistance: scrollDistance
-    });
-    lastScrollSaveTime = currentTime;
-  }
+  // Save scroll if significant or enough time passed
+  saveScrollEvent(scrollDistance, scrollY);
 
   // Track total distance
   scrollData.totalScrollDistance += scrollDistance;
   scrollData.lastScrollPosition = scrollY;
 
+  // Detect scroll pause
   clearTimeout(scrollTimeout);
   scrollTimeout = setTimeout(() => {
     isActivelyScrolling = false;
@@ -67,17 +77,17 @@ window.addEventListener('scroll', () => {
   }, 2000);
 });
 
+// ---- WHEEL EVENT (Shorts) ----
 window.addEventListener('wheel', (event) => {
-  if (!scrollData.currentContext.includes('shorts')) return; // Only for Shorts
-  
+  if (!scrollData.currentContext.includes('shorts')) return;
+
   const currentTime = Date.now();
   const deltaY = Math.abs(event.deltaY);
-  
-  //console.log('WHEEL EVENT on Shorts:', deltaY);
-  
-  if (deltaY > 10) { // Meaningful wheel movement
+
+  // Only track meaningful movement
+  if (deltaY > 10) {
     scrollData.totalScrollDistance += deltaY;
-    
+
     if ((currentTime - lastScrollSaveTime) > 500) {
       scrollData.scrollEvents.push({
         timestamp: currentTime,
@@ -90,7 +100,7 @@ window.addEventListener('wheel', (event) => {
   }
 }, { passive: true });
 
-// Track Shorts scrolling with touch events (mobile/touchpad)
+// ---- TOUCH EVENTS (Shorts mobile/touch) ----
 let touchStartY = 0;
 window.addEventListener('touchstart', (event) => {
   if (!scrollData.currentContext.includes('shorts')) return;
@@ -99,34 +109,33 @@ window.addEventListener('touchstart', (event) => {
 
 window.addEventListener('touchmove', (event) => {
   if (!scrollData.currentContext.includes('shorts')) return;
-  
+
   const currentTime = Date.now();
   const touchY = event.touches[0].clientY;
   const touchDistance = Math.abs(touchY - touchStartY);
-  
-  //console.log('TOUCH EVENT on Shorts:', touchDistance);
-  
+
   if (touchDistance > 50) {
     scrollData.totalScrollDistance += touchDistance;
-    
+
     if ((currentTime - lastScrollSaveTime) > 500) {
       scrollData.scrollEvents.push({
         timestamp: currentTime,
-        scrollY: 0, // Shorts don't have scrollY (why:[)
+        scrollY: 0, // Shorts don't have scrollY
         scrollDistance: touchDistance
       });
       lastScrollSaveTime = currentTime;
       console.log('Shorts touch event saved, total events:', scrollData.scrollEvents.length);
     }
-    
-    touchStartY = touchY; // Update for next movement
+
+    touchStartY = touchY; // update start for next move
   }
 }, { passive: true });
 
-// Video & Shorts click tracking
+// ---- VIDEO & SHORTS TRACKING ----
 let lastWatchedVideoId = null;
 let lastWatchedShortId = null;
 
+// Detect navigation to new video or Shorts
 function trackVideoNavigation() {
   const url = window.location.href;
 
@@ -187,7 +196,7 @@ function trackVideoNavigation() {
   }
 }
 
-// Track current video
+// ---- TRACK CURRENT VIDEO ----
 function trackCurrentVideo() {
   const urlParams = new URLSearchParams(window.location.search);
   const videoId = urlParams.get('v');
@@ -214,31 +223,21 @@ function trackCurrentVideo() {
   }
 }
 
-// Context tracking
+// ---- CONTEXT TRACKING ----
 function updateContext() {
   const url = window.location.href;
   const previousContext = scrollData.currentContext;
   const now = Date.now();
 
-  if (url.includes('/watch')) {
-    scrollData.currentContext = 'watching_video';
-    if (previousContext === 'watching_video') {
-      scrollData.timeWatchingVideo += (now - scrollData.lastContextChange);
-    }
-  } else if (url.includes('/shorts/')) {
-    scrollData.currentContext = 'shorts_feed';
-    if (previousContext === 'shorts_feed') {
-      scrollData.timeInShorts += (now - scrollData.lastContextChange);
-    }
-  } else if (url === 'https://www.youtube.com/' || url === 'https://www.youtube.com') {
-    scrollData.currentContext = 'homepage';
-  } else if (url.includes('/results')) {
-    scrollData.currentContext = 'search_results';
-  } else if (url.includes('/feed/subscriptions')) {
-    scrollData.currentContext = 'subscriptions';
-  } else {
-    scrollData.currentContext = 'other';
-  }
+  if (url.includes('/watch')) scrollData.currentContext = 'watching_video';
+  else if (url.includes('/shorts/')) scrollData.currentContext = 'shorts_feed';
+  else if (url === 'https://www.youtube.com/' || url === 'https://www.youtube.com') scrollData.currentContext = 'homepage';
+  else if (url.includes('/results')) scrollData.currentContext = 'search_results';
+  else if (url.includes('/feed/subscriptions')) scrollData.currentContext = 'subscriptions';
+  else scrollData.currentContext = 'other';
+
+  if (previousContext === 'watching_video') scrollData.timeWatchingVideo += now - scrollData.lastContextChange;
+  if (previousContext === 'shorts_feed') scrollData.timeInShorts += now - scrollData.lastContextChange;
 
   scrollData.lastContextChange = now;
 
@@ -247,7 +246,7 @@ function updateContext() {
   }
 }
 
-// Watch for SPA URL changes
+// ---- SPA URL CHANGE DETECTION ----
 let lastUrl = location.href;
 new MutationObserver(() => {
   const url = location.href;
@@ -259,11 +258,12 @@ new MutationObserver(() => {
   }
 }).observe(document, {subtree: true, childList: true});
 
-// Initialize context
+// ---- INITIAL CALLS ----
 updateContext();
 trackVideoNavigation();
+trackCurrentVideo();
 
-// Auto-save
+// ---- AUTO-SAVE FUNCTION ----
 function saveScrollData() {
   updateContext();
 
@@ -304,45 +304,31 @@ function saveScrollData() {
     .catch(error => console.error('Failed to save data:', error));
 }
 
-// Auto-save every 30 seconds
+// ---- AUTO-SAVE INTERVAL ----
 console.log('Setting up auto-save interval (every 30 seconds)');
 setInterval(() => {
   console.log('Auto-save triggered');
   saveScrollData();
 }, 30000);
 
-// Save on unload
+// ---- SAVE ON UNLOAD ----
 window.addEventListener('beforeunload', () => {
   console.log('Page closing, saving data');
   saveScrollData();
 });
 
-// Initialize tracking
-console.log('Initializing YouTube tracking');
-trackCurrentVideo();
-
-console.log('YouTube tracking initialized');
-
-
-// NUDGE SYSTEM - newest additions for Version 1.1
-
-// Listen for nudge messages from background
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'showAwarenessBanner') {
-    showAwarenessBanner(message.message, message.nudgeType);
-  } else if (message.action === 'showSuggestionPrompt') {
-    showSuggestionPrompt(message.suggestions, message.duration, message.nudgeType);
-  } else if (message.action === 'activateScrollResistance') {
-    activateScrollResistance(message.duration, message.context);
-  }
+// ---- NUDGE SYSTEM ----
+browser.runtime.onMessage.addListener((message) => {
+  if (message.action === 'showAwarenessBanner') showAwarenessBanner(message.message, message.nudgeType);
+  else if (message.action === 'showSuggestionPrompt') showSuggestionPrompt(message.suggestions, message.duration, message.nudgeType);
+  else if (message.action === 'activateScrollResistance') activateScrollResistance(message.duration, message.context);
 });
 
-// Level 1: Awareness banner (gentle, dismissable)
+// ---- NUDGE LEVEL 1: AWARENESS BANNER ----
 function showAwarenessBanner(message, nudgeType) {
-  // Remove existing banner if any
   const existing = document.getElementById('awareness-banner');
   if (existing) existing.remove();
-  
+
   const banner = document.createElement('div');
   banner.id = 'awareness-banner';
   banner.innerHTML = `
@@ -383,33 +369,27 @@ function showAwarenessBanner(message, nudgeType) {
       }
     </style>
   `;
-  
   document.body.appendChild(banner);
-  
-  // Close button
+
   document.getElementById('banner-close').addEventListener('click', () => {
     banner.remove();
   });
-  
-  // Auto-dismiss after 8 seconds
+
   setTimeout(() => {
-    if (banner.parentElement) {
-      banner.remove();
-    }
+    if (banner.parentElement) banner.remove();
   }, 8000);
 }
 
-// Level 2: Suggestion prompt (medium friction)
+// ---- NUDGE LEVEL 2: SUGGESTION PROMPT ----
 function showSuggestionPrompt(suggestions, duration, nudgeType) {
-  // Remove existing prompts
   const existing = document.getElementById('suggestion-prompt');
   if (existing) existing.remove();
-  
+
   const prompt = document.createElement('div');
   prompt.id = 'suggestion-prompt';
-  
-  const suggestionButtons = suggestions.map((suggestion, index) => `
-    <button class="suggestion-btn" data-index="${index}" style="
+
+  const suggestionButtons = suggestions.map((s, i) => `
+    <button class="suggestion-btn" data-index="${i}" style="
       width: 100%;
       padding: 12px;
       background: rgba(102, 126, 234, 0.1);
@@ -421,12 +401,12 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
       font-size: 14px;
       margin-bottom: 8px;
       transition: all 0.2s;
-    " onmouseover="this.style.background='#667eea'; this.style.color='white';" 
+    " onmouseover="this.style.background='#667eea'; this.style.color='white';"
        onmouseout="this.style.background='rgba(102, 126, 234, 0.1)'; this.style.color='#667eea';">
-      ${suggestion}
+      ${s}
     </button>
   `).join('');
-  
+
   prompt.innerHTML = `
     <div style="
       position: fixed;
@@ -470,202 +450,106 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
       z-index: 999998;
     "></div>
   `;
-  
   document.body.appendChild(prompt);
-  
-  // Handle suggestion clicks
+
   prompt.querySelectorAll('.suggestion-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const index = parseInt(btn.dataset.index);
-      handleSuggestionClick(suggestions[index]);
+      handleSuggestionClick(suggestions[parseInt(btn.dataset.index)]);
       prompt.remove();
     });
   });
-  
-  // Dismiss button
-  document.getElementById('prompt-dismiss').addEventListener('click', () => {
-    prompt.remove();
-  });
-  
-  // Click backdrop to dismiss
-  document.getElementById('prompt-backdrop').addEventListener('click', () => {
-    prompt.remove();
-  });
+
+  document.getElementById('prompt-dismiss').addEventListener('click', () => prompt.remove());
+  document.getElementById('prompt-backdrop').addEventListener('click', () => prompt.remove());
 }
 
 function handleSuggestionClick(suggestion) {
   console.log('User selected suggestion:', suggestion);
-  
-  if (suggestion.includes('break') || suggestion.includes('Close')) {
-    // User chose to take a break or close
-    window.close();
-  } else if (suggestion.includes('Search')) {
-    // Focus search box
+  if (suggestion.includes('break') || suggestion.includes('Close')) window.close();
+  else if (suggestion.includes('Search')) {
     const searchBox = document.querySelector('input#search');
     if (searchBox) searchBox.focus();
-  } else if (suggestion.includes('subscriptions')) {
-    // Navigate to subscriptions
-    window.location.href = 'https://www.youtube.com/feed/subscriptions';
-  } else if (suggestion.includes('Watch Later')) {
-    // Navigate to Watch Later
-    window.location.href = 'https://www.youtube.com/playlist?list=WL';
-  }
+  } else if (suggestion.includes('subscriptions')) window.location.href = 'https://www.youtube.com/feed/subscriptions';
+  else if (suggestion.includes('Watch Later')) window.location.href = 'https://www.youtube.com/playlist?list=WL';
 }
 
-// Level 3: Scroll resistance (high friction)
+// ---- NUDGE LEVEL 3: SCROLL RESISTANCE ----
 let scrollResistanceActive = false;
 let scrollAccumulator = 0;
 const SCROLL_THRESHOLD = 100;
 
 function activateScrollResistance(duration, context) {
   if (scrollResistanceActive) return;
-  
   scrollResistanceActive = true;
   console.log('SCROLL RESISTANCE ACTIVATED');
-  
+
   showScrollResistanceOverlay(duration, context);
-  
-  // Intercept scroll events
+
   window.addEventListener('wheel', resistScroll, { passive: false });
-  window.addEventListener('touchmove', resistScroll, { passive: false });
-  window.addEventListener('keydown', resistScrollKeys, { passive: false });
+  window.addEventListener('touchmove', resistScrollTouch, { passive: false });
+
+  setTimeout(() => {
+    scrollResistanceActive = false;
+    removeScrollResistanceOverlay();
+    window.removeEventListener('wheel', resistScroll);
+    window.removeEventListener('touchmove', resistScrollTouch);
+    console.log('SCROLL RESISTANCE DEACTIVATED');
+  }, duration * 1000);
 }
 
-function resistScroll(event) {
-  if (!scrollResistanceActive) return;
-  
-  event.preventDefault();
-  event.stopPropagation();
-  
-  // Accumulate scroll attempts
-  const delta = Math.abs(event.deltaY || 0);
-  scrollAccumulator += delta;
-  
-  // Update progress bar
-  updateResistanceProgress(scrollAccumulator / SCROLL_THRESHOLD);
-  
-  // Only allow scroll after threshold
-  if (scrollAccumulator >= SCROLL_THRESHOLD) {
-    window.scrollBy(0, Math.sign(event.deltaY || 0) * 50);
-    scrollAccumulator = 0;
-    flashResistanceIndicator();
+function resistScroll(e) {
+  scrollAccumulator += Math.abs(e.deltaY);
+  if (scrollAccumulator > SCROLL_THRESHOLD) {
+    e.preventDefault();
+    shakeScrollOverlay();
   }
 }
 
-function resistScrollKeys(event) {
-  if (!scrollResistanceActive) return;
-  
-  if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Space'].includes(event.code)) {
-    event.preventDefault();
-    scrollAccumulator += 20;
-    updateResistanceProgress(scrollAccumulator / SCROLL_THRESHOLD);
+let touchResistanceStartY = 0;
+function resistScrollTouch(e) {
+  const touchY = e.touches[0].clientY;
+  const dist = Math.abs(touchY - touchResistanceStartY);
+  scrollAccumulator += dist;
+  if (scrollAccumulator > SCROLL_THRESHOLD) {
+    e.preventDefault();
+    shakeScrollOverlay();
   }
+  touchResistanceStartY = touchY;
 }
 
+let overlayElem;
 function showScrollResistanceOverlay(duration, context) {
-  const overlay = document.createElement('div');
-  overlay.id = 'scroll-resistance-overlay';
-  overlay.innerHTML = `
-    <div style="
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
-      color: white;
-      padding: 20px;
-      z-index: 999999;
-      text-align: center;
-      border-bottom: 4px solid rgba(255,255,255,0.3);
-      font-family: 'Segoe UI', sans-serif;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-    ">
-      <div style="font-size: 18px; font-weight: 600; margin-bottom: 6px;">
-        Scroll Resistance Active
-      </div>
-      <div style="font-size: 13px; opacity: 0.95; margin-bottom: 14px;">
-        ${duration} minutes of scrolling detected. Scrolling is now intentionally slowed.
-      </div>
-      <div style="
-        width: 100%;
-        max-width: 400px;
-        height: 6px;
-        background: rgba(255, 255, 255, 0.3);
-        border-radius: 3px;
-        margin: 0 auto 12px auto;
-        overflow: hidden;
-      ">
-        <div id="resistance-progress-fill" style="
-          width: 0%;
-          height: 100%;
-          background: white;
-          transition: width 0.1s;
-        "></div>
-      </div>
-      <div style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">
-        Keep scrolling to continue, or:
-      </div>
-      <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-        <button id="resistance-disable" style="
-          padding: 8px 16px;
-          background: rgba(255,255,255,0.2);
-          border: 1px solid rgba(255,255,255,0.4);
-          border-radius: 6px;
-          color: white;
-          cursor: pointer;
-          font-weight: 600;
-          font-size: 13px;
-        ">Disable</button>
-        <button id="resistance-close" style="
-          padding: 8px 16px;
-          background: white;
-          border: none;
-          border-radius: 6px;
-          color: #ff6b6b;
-          cursor: pointer;
-          font-weight: 600;
-          font-size: 13px;
-        ">Close YouTube</button>
-      </div>
-    </div>
-  `;
-  
-  document.body.appendChild(overlay);
-  
-  document.getElementById('resistance-disable').addEventListener('click', () => {
-    deactivateScrollResistance();
-    overlay.remove();
-  });
-  
-  document.getElementById('resistance-close').addEventListener('click', () => {
-    window.close();
-  });
+  overlayElem = document.createElement('div');
+  overlayElem.id = 'scroll-resistance-overlay';
+  overlayElem.style.position = 'fixed';
+  overlayElem.style.top = '0';
+  overlayElem.style.left = '0';
+  overlayElem.style.right = '0';
+  overlayElem.style.bottom = '0';
+  overlayElem.style.background = 'rgba(255,255,255,0.3)';
+  overlayElem.style.backdropFilter = 'blur(4px)';
+  overlayElem.style.zIndex = '9999999';
+  overlayElem.style.display = 'flex';
+  overlayElem.style.alignItems = 'center';
+  overlayElem.style.justifyContent = 'center';
+  overlayElem.style.fontSize = '28px';
+  overlayElem.style.fontWeight = '700';
+  overlayElem.style.color = '#e74c3c';
+  overlayElem.style.fontFamily = 'Segoe UI, sans-serif';
+  overlayElem.innerText = 'Slow down! You’ve been scrolling too much';
+  document.body.appendChild(overlayElem);
 }
 
-function updateResistanceProgress(progress) {
-  const fill = document.getElementById('resistance-progress-fill');
-  if (fill) {
-    fill.style.width = (Math.min(progress, 1) * 100) + '%';
-  }
+function shakeScrollOverlay() {
+  if (!overlayElem) return;
+  overlayElem.style.transform = 'translateX(-5px)';
+  setTimeout(() => overlayElem.style.transform = 'translateX(5px)', 50);
+  setTimeout(() => overlayElem.style.transform = 'translateX(0)', 100);
 }
 
-function flashResistanceIndicator() {
-  const fill = document.getElementById('resistance-progress-fill');
-  if (fill) {
-    fill.style.background = '#FFC107';
-    setTimeout(() => {
-      fill.style.background = 'white';
-    }, 150);
-  }
+function removeScrollResistanceOverlay() {
+  if (overlayElem) overlayElem.remove();
 }
 
-function deactivateScrollResistance() {
-  scrollResistanceActive = false;
-  scrollAccumulator = 0;
-  window.removeEventListener('wheel', resistScroll);
-  window.removeEventListener('touchmove', resistScroll);
-  window.removeEventListener('keydown', resistScrollKeys);
-  console.log('Scroll resistance deactivated');
-}
-
-console.log('Nudge system initialized');
+// ---- END OF SCRIPT ----
+console.log('YouTube Scrolling Tracker fully initialized');
