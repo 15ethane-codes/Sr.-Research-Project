@@ -1,9 +1,6 @@
 // console.log when script loads
 console.log('YouTube Scrolling Tracker loaded');
 
-// import ML prediction (not used in content script yet)
-import { predictDoomscrollProbability } from './model.js';
-
 // ---- READY HANDSHAKE ----
 // Notify background script that content script is ready
 let contentReady = false;
