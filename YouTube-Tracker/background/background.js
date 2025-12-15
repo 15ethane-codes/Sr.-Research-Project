@@ -98,6 +98,34 @@ function analyzeSession(sessionData) {
   const clickRate = durationMinutes > 0 ? totalClicks / durationMinutes : 0;
   const engagementScore = scrollDistance > 0 ? (totalClicks * 1000 / scrollDistance) : 0;
   
+  const mlFeatures = {
+  scrollIntensity: scrollIntensity,
+  engagementScore: engagementScore,
+  durationMinutes: durationMinutes
+  };
+
+  const doomProb = predictDoomscrollProbability(mlFeatures);
+
+  console.log('ML doomscroll probability:', doomProb.toFixed(3));
+  console.log('Hybrid decision:', {
+    ruleBasedDoom: ruleBased,
+    mlProbability: doomProb,
+    final: isDoomscrolling
+  }); // Could be useful to see
+  let bayesDoom = false;
+
+  // Simple likelihood logic - edit later
+  if (mlProbability === null) {
+    const pScroll = scrollIntensity > 2000 ? 0.7 : 0.3;
+    const pDuration = durationMinutes > 20 ? 0.7 : 0.3;
+    const pEngagement = engagementScore < 0.5 ? 0.6 : 0.4;
+
+    const posterior = (pScroll + pDuration + pEngagement) / 3;
+    bayesDoom = posterior >= 0.6;
+
+    console.log('Bayesian fallback:', posterior);
+  }
+
   // Multi-signal doomscrolling detection
   /*const signals = {
     longDuration: durationMinutes > 15,
@@ -118,7 +146,12 @@ function analyzeSession(sessionData) {
   };
   
   const signalCount = Object.values(signals).filter(Boolean).length;
-  const isDoomscrolling = signalCount >= 3;
+  //const isDoomscrolling = signalCount >= 3; - old logic
+  const ruleBased = signalCount >= 3;
+  const mlBased = doomProb >= 0.65;
+
+  //const isDoomscrolling = ruleBased || mlBased; - old logic
+  const isDoomscrolling = ruleBased || mlBased || bayesDoom;
   
   console.log('Session Analysis:', {
     duration: durationMinutes.toFixed(1) + 'min',
