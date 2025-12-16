@@ -107,15 +107,11 @@ function analyzeSession(sessionData) {
   const doomProb = predictDoomscrollProbability(mlFeatures);
 
   console.log('ML doomscroll probability:', doomProb.toFixed(3));
-  console.log('Hybrid decision:', {
-    ruleBasedDoom: ruleBased,
-    mlProbability: doomProb,
-    final: isDoomscrolling
-  }); // Could be useful to see
+
   let bayesDoom = false;
 
   // Simple likelihood logic - edit later
-  if (mlProbability === null) {
+  if (doomProb === null) {
     const pScroll = scrollIntensity > 2000 ? 0.7 : 0.3;
     const pDuration = durationMinutes > 20 ? 0.7 : 0.3;
     const pEngagement = engagementScore < 0.5 ? 0.6 : 0.4;
@@ -153,6 +149,14 @@ function analyzeSession(sessionData) {
   //const isDoomscrolling = ruleBased || mlBased; - old logic
   const isDoomscrolling = ruleBased || mlBased || bayesDoom;
   
+  console.log('Hybrid decision:', {
+    ruleBased: ruleBased,
+    ml: mlBased,
+    bayesian: bayesDoom,
+    mlProbability: doomProb.toFixed(3),
+    final: isDoomscrolling
+  });
+
   console.log('Session Analysis:', {
     duration: durationMinutes.toFixed(1) + 'min',
     scrollDistance: Math.round(scrollDistance),
