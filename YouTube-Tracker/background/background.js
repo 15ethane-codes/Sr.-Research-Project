@@ -1,5 +1,13 @@
 console.log('Background script loaded and ready');
 
+let nudgeLevel = 0;
+let nudgeCount = 0;
+let lastNudgeTime = 0;
+const NUDGE_COOLDOWN = 5 * 60 * 1000; // 5 minutes between nudges
+
+// Keep track of rule-based state per session
+const sessionRuleStates = {};
+
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received from content script:', message.action);
 
@@ -9,8 +17,8 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       totalClicks: message.data.totalClicks,
       scrolls: message.data.scrollEvents?.length || 0
     });
-    saveSessionData(message.data);
 
+    saveSessionData(message.data);
     analyzeSession(message.data);
 
     sendResponse({success: true, saved: true});
@@ -21,7 +29,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log('Returning', data.length, 'sessions');
       sendResponse({data: data});
     });
-    return true; // Keep message channel open for async
+    return true;
   }
 
   return false;
@@ -77,13 +85,6 @@ async function cleanupOldData() {
   }
 }
 
-// NUDGE SYSTEM (newest additions for Version 1.1)
-
-let nudgeLevel = 0;
-let nudgeCount = 0;
-let lastNudgeTime = 0;
-const NUDGE_COOLDOWN = 5 * 60 * 1000; // 5 minutes between nudges
-
 // Enhanced doomscrolling detection with nudge triggers
 function analyzeSession(sessionData) {
   const durationMinutes = sessionData.sessionDuration / 1000 / 60;
@@ -91,17 +92,15 @@ function analyzeSession(sessionData) {
   const videoClicks = sessionData.videoClicks || 0;
   const shortsClicks = sessionData.shortsClicks || 0;
   const totalClicks = videoClicks + shortsClicks;
-  const scrollEvents = sessionData.scrollEvents ? sessionData.scrollEvents.length : 0;
-  
-  // Calculate engagement metrics
+
   const scrollIntensity = durationMinutes > 0 ? scrollDistance / durationMinutes : 0;
   const clickRate = durationMinutes > 0 ? totalClicks / durationMinutes : 0;
   const engagementScore = scrollDistance > 0 ? (totalClicks * 1000 / scrollDistance) : 0;
-  
+
   const mlFeatures = {
-  scrollIntensity: scrollIntensity,
-  engagementScore: engagementScore,
-  durationMinutes: durationMinutes
+    scrollIntensity: scrollIntensity,
+    engagementScore: engagementScore,
+    durationMinutes: durationMinutes
   };
 
   const doomProb = predictDoomscrollProbability(mlFeatures);
@@ -109,8 +108,6 @@ function analyzeSession(sessionData) {
   console.log('ML doomscroll probability:', doomProb.toFixed(3));
 
   let bayesDoom = false;
-
-  // Simple likelihood logic - edit later
   if (doomProb === null) {
     const pScroll = scrollIntensity > 2000 ? 0.7 : 0.3;
     const pDuration = durationMinutes > 20 ? 0.7 : 0.3;
@@ -122,33 +119,25 @@ function analyzeSession(sessionData) {
     console.log('Bayesian fallback:', posterior);
   }
 
-  // Multi-signal doomscrolling detection
-  /*const signals = {
-    longDuration: durationMinutes > 15,
-    highScrolling: scrollDistance > 15000,
-    lowEngagement: engagementScore < 0.5,
-    fastScrolling: scrollIntensity > 2000,
-    shortsOverload: sessionData.currentContext === 'shorts_feed' && shortsClicks > 20,
-    lowClickRate: clickRate < 0.3 && durationMinutes > 10
-  };
-  */
+  // Signals for rule-based
   const signals = {
-    longDuration: durationMinutes > 2,  // Test
-    highScrolling: scrollDistance > 3000,  // Lower threshold
-    lowEngagement: engagementScore < 0.5,
-    fastScrolling: scrollIntensity > 1000,
-    shortsOverload: sessionData.currentContext === 'shorts_feed' && shortsClicks > 5,
-    lowClickRate: clickRate < 0.3 && durationMinutes > 2
+    longDuration: durationMinutes > 7.5,
+    highScrolling: scrollDistance > 10000,
+    lowEngagement: engagementScore < 0.5, //Not useful for signal (for now)
+    fastScrolling: scrollIntensity > 2000,
+    lowClickRate: clickRate < 0.3 && durationMinutes > 7.5,
+    shortsOverload: sessionData.currentContext === 'shorts_feed' && shortsClicks > 18 // 18 as a threshold
   };
-  
   const signalCount = Object.values(signals).filter(Boolean).length;
-  //const isDoomscrolling = signalCount >= 3; - old logic
-  const ruleBased = signalCount >= 3;
-  const mlBased = doomProb >= 0.65;
 
-  //const isDoomscrolling = ruleBased || mlBased; - old logic
+  // Gradual rule-based state tracking
+  const prevRuleState = sessionRuleStates[sessionData.sessionId] || false;
+  const ruleBased = prevRuleState ? signalCount >= 2 : signalCount >= 3; 
+  sessionRuleStates[sessionData.sessionId] = ruleBased;
+
+  const mlBased = doomProb >= 0.65;
   const isDoomscrolling = ruleBased || mlBased || bayesDoom;
-  
+
   console.log('Hybrid decision:', {
     ruleBased: ruleBased,
     ml: mlBased,
@@ -156,56 +145,53 @@ function analyzeSession(sessionData) {
     mlProbability: doomProb.toFixed(3),
     final: isDoomscrolling
   });
+  // Grace period before nudges
+  const GRACE_PERIOD_MAIN = 2; // minutes
+  const GRACE_PERIOD_SHORTS = 0.5; // 30 seconds
 
-  console.log('Session Analysis:', {
-    duration: durationMinutes.toFixed(1) + 'min',
-    scrollDistance: Math.round(scrollDistance),
-    totalClicks: totalClicks,
-    scrollIntensity: Math.round(scrollIntensity),
-    engagementScore: engagementScore.toFixed(3),
-    signals: signals,
-    signalCount: signalCount,
-    isDoomscrolling: isDoomscrolling
-  });
-  
-  // Trigger nudges if doomscrolling detected
-  if (isDoomscrolling) {
-    console.log('Doomscrolling detected! Triggering nudge...');
-    triggerNudge(sessionData, signals, durationMinutes);
+  const currentGrace = sessionData.currentContext === 'shorts_feed' 
+                      ? GRACE_PERIOD_SHORTS 
+                      : GRACE_PERIOD_MAIN;
+
+  if (durationMinutes < currentGrace) {
+      console.log(`Within grace period (${currentGrace} min), skipping nudge.`);
+      return false; // Don't analyze further yet
   }
-  
+
+  // Only nudge if doomscrolling AND user is in scrollable context
+  const canNudge = isDoomscrolling && sessionData.currentContext !== 'watching_video';
+  if (canNudge) {
+    console.log('Doomscrolling detected and context OK! Triggering nudge...');
+    triggerNudge(sessionData, signals, durationMinutes);
+  } else if (isDoomscrolling) {
+    console.log('Doomscrolling detected but user is watching video, skipping nudge.');
+  }
+
   return isDoomscrolling;
 }
 
+// Nudge triggering functions (unchanged)
 function triggerNudge(sessionData, signals, durationMinutes) {
   const now = Date.now();
-  
-  // Don't spam nudges
   if (now - lastNudgeTime < NUDGE_COOLDOWN) {
     console.log('Nudge on cooldown, skipping...');
     return;
   }
-  
+
   lastNudgeTime = now;
   nudgeCount++;
-  
-  // Escalate based on duration and nudge count
+
   if (durationMinutes >= 25 && nudgeCount >= 2) {
-    // Level 3: Scroll resistance (high friction)
     nudgeLevel = 3;
     activateScrollResistance(sessionData, durationMinutes);
-    
   } else if (durationMinutes >= 20 || nudgeCount >= 2) {
-    // Level 2: Suggestion prompts
     nudgeLevel = 2;
     showSuggestionNudge(sessionData, signals, durationMinutes);
-    
   } else {
-    // Level 1: Gentle awareness
     nudgeLevel = 1;
     showAwarenessNudge(sessionData, signals, durationMinutes);
   }
-  
+
   logNudge(sessionData.sessionId, nudgeLevel, nudgeCount, durationMinutes);
 }
 
@@ -281,55 +267,39 @@ function activateScrollResistance(sessionData, durationMinutes) {
     context: sessionData.currentContext
   });
 }
-window.testNudge = (x) => triggerNudge(x); // test
-// Helper: Send message to active YouTube tab
-/*function sendToActiveTab(message) {
-  browser.tabs.query({active: true, currentWindow: true}).then(tabs => {
-    if (tabs[0] && tabs[0].url && tabs[0].url.includes('youtube.com')) {
-      browser.tabs.sendMessage(tabs[0].id, message)
-        .catch(err => console.log('Could not send message to tab:', err));
-    }
-  });
-}*/
 function sendToActiveTab(message) {
   browser.tabs.query({ active: true, currentWindow: true }).then(tabs => {
     if (tabs[0] && tabs[0].url.includes('youtube.com')) {
-      // Send only if content script is ready
       browser.tabs.sendMessage(tabs[0].id, message)
         .catch(err => console.log('Could not send message to tab:', err));
     }
   });
 }
-let readyTabs = new Set();
 
 browser.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'contentReady' && sender.tab) {
-    readyTabs.add(sender.tab.id);
     console.log('Tab ready for nudges:', sender.tab.id);
   }
 });
 
-
-// Log nudges for effectiveness analysis
 async function logNudge(sessionId, nudgeLevel, nudgeCount, durationMinutes) {
   try {
     const result = await browser.storage.local.get(['nudgeHistory']);
     const history = result.nudgeHistory || [];
-    
+
     history.push({
       timestamp: Date.now(),
-      sessionId: sessionId,
-      nudgeLevel: nudgeLevel,
-      nudgeCount: nudgeCount,
+      sessionId,
+      nudgeLevel,
+      nudgeCount,
       sessionDuration: durationMinutes
     });
-    
-    // Keep last 100 nudges
-    const recentHistory = history.slice(-100);
-    await browser.storage.local.set({ nudgeHistory: recentHistory });
-    
+
+    await browser.storage.local.set({ nudgeHistory: history.slice(-100) });
     console.log('Nudge logged - Level:', nudgeLevel, 'Count:', nudgeCount);
   } catch (error) {
     console.error('Error logging nudge:', error);
   }
 }
+
+window.testNudge = (x) => triggerNudge(x);
