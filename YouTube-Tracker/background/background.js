@@ -1,3 +1,4 @@
+//Version 1.3.5
 console.log('Background script loaded and ready');
 
 let nudgeLevel = 0;
@@ -7,6 +8,8 @@ const NUDGE_COOLDOWN = 5 * 60 * 1000; // 5 minutes between nudges
 
 // Keep track of rule-based state per session
 const sessionRuleStates = {};
+// Track rolling accumulation for ML features per session
+const mlWindowState = {};
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received from content script:', message.action);
@@ -37,65 +40,102 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Save session data
 async function saveSessionData(sessionData) {
-  try {
-    const result = await browser.storage.local.get(['scrollSessions']);
-    const sessions = result.scrollSessions || [];
+    try {
+      const result = await browser.storage.local.get(['scrollSessions']);
+      const sessions = result.scrollSessions || [];
 
-    const existingIndex = sessions.findIndex(s => s.sessionId === sessionData.sessionId);
+      const existingIndex = sessions.findIndex(s => s.sessionId === sessionData.sessionId);
 
-    if (existingIndex >= 0) {
-      sessions[existingIndex] = {...sessionData, savedAt: Date.now()};
-      console.log('Replaced session:', sessionData.sessionId, 'Total clicks:', sessionData.totalClicks);
-    } else {
-      sessions.push({...sessionData, savedAt: Date.now()});
-      console.log('Added new session:', sessionData.sessionId);
+      if (existingIndex >= 0) {
+        sessions[existingIndex] = {...sessionData, savedAt: Date.now()};
+        console.log('Replaced session:', sessionData.sessionId, 'Total clicks:', sessionData.totalClicks);
+      } else {
+        sessions.push({...sessionData, savedAt: Date.now()});
+        console.log('Added new session:', sessionData.sessionId);
+      }
+
+      const recentSessions = sessions.slice(-100);
+      await browser.storage.local.set({scrollSessions: recentSessions});
+      console.log('Total unique sessions in storage:', recentSessions.length);
+    } catch (error) {
+      console.error('Error saving session data:', error);
     }
-
-    const recentSessions = sessions.slice(-100);
-    await browser.storage.local.set({scrollSessions: recentSessions});
-    console.log('Total unique sessions in storage:', recentSessions.length);
-  } catch (error) {
-    console.error('Error saving session data:', error);
   }
-}
 
-// Get stored sessions
-async function getStoredData() {
-  try {
-    const result = await browser.storage.local.get(['scrollSessions']);
-    return result.scrollSessions || [];
-  } catch (error) {
-    console.error('Error retrieving data:', error);
-    return [];
+  // Get stored sessions
+  async function getStoredData() {
+    try {
+      const result = await browser.storage.local.get(['scrollSessions']);
+      return result.scrollSessions || [];
+    } catch (error) {
+      console.error('Error retrieving data:', error);
+      return [];
+    }
   }
-}
 
-// Cleanup old data
-browser.runtime.onInstalled.addListener(() => cleanupOldData());
-async function cleanupOldData() {
-  try {
-    const result = await browser.storage.local.get(['scrollSessions']);
-    const sessions = result.scrollSessions || [];
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const recentSessions = sessions.filter(s => s.savedAt > thirtyDaysAgo);
-    await browser.storage.local.set({scrollSessions: recentSessions});
-    console.log(`Cleaned up old data. Kept ${recentSessions.length} sessions.`);
-  } catch (error) {
-    console.error('Error cleaning up data:', error);
+  // Cleanup old data
+  browser.runtime.onInstalled.addListener(() => cleanupOldData());
+  async function cleanupOldData() {
+    try {
+      const result = await browser.storage.local.get(['scrollSessions']);
+      const sessions = result.scrollSessions || [];
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const recentSessions = sessions.filter(s => s.savedAt > thirtyDaysAgo);
+      await browser.storage.local.set({scrollSessions: recentSessions});
+      console.log(`Cleaned up old data. Kept ${recentSessions.length} sessions.`);
+    } catch (error) {
+      console.error('Error cleaning up data:', error);
+    }
   }
-}
 
-// Enhanced doomscrolling detection with nudge triggers
+// Enhanced doomscrolling detection with rolling window
 function analyzeSession(sessionData) {
-  const durationMinutes = sessionData.sessionDuration / 1000 / 60;
-  const scrollDistance = sessionData.totalScrollDistance;
-  const videoClicks = sessionData.videoClicks || 0;
-  const shortsClicks = sessionData.shortsClicks || 0;
-  const totalClicks = videoClicks + shortsClicks;
+  // Initialize rolling state for session if needed
+  if (!mlWindowState[sessionData.sessionId]) {
+    mlWindowState[sessionData.sessionId] = {
+      scrollDistance: 0,
+      videoClicks: 0,
+      shortsClicks: 0,
+      durationMs: 0,
+      lastReset: Date.now()
+    };
+  }
 
-  const scrollIntensity = durationMinutes > 0 ? scrollDistance / durationMinutes : 0;
+  const w = mlWindowState[sessionData.sessionId];
+  const now = Date.now();
+
+  // Slow decay if watching a normal video (Version 1.3.0-1.3.5))
+  if (sessionData.currentContext === 'watching_video') {
+    const decayFactor = 0.85; // stronger decay per update
+    w.scrollDistance *= decayFactor;
+    w.videoClicks *= decayFactor;
+    w.shortsClicks *= decayFactor;
+    w.durationMs *= decayFactor;
+
+    // Reset rule-based signals while watching video
+    sessionRuleStates[sessionData.sessionId] = false;
+  } else {
+    // Update rolling totals normally
+    w.scrollDistance += sessionData.totalScrollDistance;
+    w.videoClicks += sessionData.videoClicks || 0;
+    w.shortsClicks += sessionData.shortsClicks || 0;
+    w.durationMs += sessionData.sessionDuration;
+
+    // Rolling reset every 30s to avoid over-accumulation
+    if (now - w.lastReset > 30 * 1000) {
+      w.scrollDistance *= 0.7; // decay 30%
+      w.videoClicks *= 0.7;
+      w.shortsClicks *= 0.7;
+      w.durationMs *= 0.7;
+      w.lastReset = now;
+    }
+  }
+
+  const durationMinutes = w.durationMs / 1000 / 60;
+  const totalClicks = w.videoClicks + w.shortsClicks;
+  const scrollIntensity = durationMinutes > 0 ? w.scrollDistance / durationMinutes : 0;
   const clickRate = durationMinutes > 0 ? totalClicks / durationMinutes : 0;
-  const engagementScore = scrollDistance > 0 ? (totalClicks * 1000 / scrollDistance) : 0;
+  const engagementScore = w.scrollDistance > 0 ? (totalClicks * 1000 / w.scrollDistance) : 0;
 
   const mlFeatures = {
     scrollIntensity: scrollIntensity,
@@ -103,8 +143,7 @@ function analyzeSession(sessionData) {
     durationMinutes: durationMinutes
   };
 
-  const doomProb = predictDoomscrollProbability(mlFeatures);
-
+  let doomProb = predictDoomscrollProbability(mlFeatures);
   console.log('ML doomscroll probability:', doomProb.toFixed(3));
 
   let bayesDoom = false;
@@ -115,62 +154,81 @@ function analyzeSession(sessionData) {
 
     const posterior = (pScroll + pDuration + pEngagement) / 3;
     bayesDoom = posterior >= 0.6;
-
     console.log('Bayesian fallback:', posterior);
   }
 
-  // Signals for rule-based
+  // Signals for rule-based (rolling window aware)
   const signals = {
     longDuration: durationMinutes > 7.5,
-    highScrolling: scrollDistance > 10000,
-    lowEngagement: engagementScore < 0.5, //Not useful for signal (for now)
+    highScrolling: w.scrollDistance > 10000,
+    lowEngagement: engagementScore < 0.5,
     fastScrolling: scrollIntensity > 2000,
     lowClickRate: clickRate < 0.3 && durationMinutes > 7.5,
-    shortsOverload: sessionData.currentContext === 'shorts_feed' && shortsClicks > 18 // 18 as a threshold
+    shortsOverload: sessionData.currentContext === 'shorts_feed' && w.shortsClicks > 18
   };
   const signalCount = Object.values(signals).filter(Boolean).length;
 
-  // Gradual rule-based state tracking
+  // Rule-based decision
   const prevRuleState = sessionRuleStates[sessionData.sessionId] || false;
-  const ruleBased = prevRuleState ? signalCount >= 2 : signalCount >= 3; 
+  let ruleBased = prevRuleState ? signalCount >= 2 : signalCount >= 3;
+  if (sessionData.currentContext === 'watching_video') {
+    ruleBased = false; // reset while watching video
+  }
   sessionRuleStates[sessionData.sessionId] = ruleBased;
 
-  const mlBased = doomProb >= 0.65;
-  const isDoomscrolling = ruleBased || mlBased || bayesDoom;
+  // ML-based decision
+  let mlBased = doomProb >= 0.65;
 
-  console.log('Hybrid decision:', {
-    ruleBased: ruleBased,
+  // Stronger ML decay while watching a video
+  if (sessionData.currentContext === 'watching_video') {
+    const decayFactor = 0.85;
+    const decayedFeatures = {
+      scrollIntensity: scrollIntensity * decayFactor,
+      engagementScore: engagementScore * decayFactor,
+      durationMinutes: durationMinutes * decayFactor
+    };
+    doomProb = predictDoomscrollProbability(decayedFeatures);
+    mlBased = doomProb >= 0.65;
+    console.log('ML doom probability after decay:', doomProb.toFixed(3));
+  }
+
+  // Final decision: at least 2 of 3 logics must be true
+  const logicArray = [ruleBased, mlBased, bayesDoom];
+  const trueCount = logicArray.filter(Boolean).length;
+  const isDoomscrolling = trueCount >= 2;
+
+  console.log('Hybrid decision (2-of-3 rule):', {
+    ruleBased,
     ml: mlBased,
     bayesian: bayesDoom,
     mlProbability: doomProb.toFixed(3),
     final: isDoomscrolling
   });
-  // Grace period before nudges
+
   const GRACE_PERIOD_MAIN = 2; // minutes
   const GRACE_PERIOD_SHORTS = 0.5; // 30 seconds
-
   const currentGrace = sessionData.currentContext === 'shorts_feed' 
                       ? GRACE_PERIOD_SHORTS 
                       : GRACE_PERIOD_MAIN;
 
   if (durationMinutes < currentGrace) {
-      console.log(`Within grace period (${currentGrace} min), skipping nudge.`);
-      return false; // Don't analyze further yet
+    console.log(`Within grace period (${currentGrace} min), skipping nudge.`);
+    return false;
   }
 
-  // Only nudge if doomscrolling AND user is in scrollable context
   const canNudge = isDoomscrolling && sessionData.currentContext !== 'watching_video';
   if (canNudge) {
     console.log('Doomscrolling detected and context OK! Triggering nudge...');
     triggerNudge(sessionData, signals, durationMinutes);
-  } else if (isDoomscrolling) {
+  } else if (isDoomscrolling && sessionData.currentContext === 'watching_video') {
     console.log('Doomscrolling detected but user is watching video, skipping nudge.');
   }
 
   return isDoomscrolling;
 }
 
-// Nudge triggering functions (unchanged)
+
+// Nudge functions (Version 1.2.0)
 function triggerNudge(sessionData, signals, durationMinutes) {
   const now = Date.now();
   if (now - lastNudgeTime < NUDGE_COOLDOWN) {
@@ -195,14 +253,13 @@ function triggerNudge(sessionData, signals, durationMinutes) {
   logNudge(sessionData.sessionId, nudgeLevel, nudgeCount, durationMinutes);
 }
 
-// Level 1: Awareness notification (gentle)
 function showAwarenessNudge(sessionData, signals, durationMinutes) {
   let message = '';
   let nudgeType = '';
   
   if (signals.shortsOverload) {
     nudgeType = 'shorts_awareness';
-    message = `You've watched ${sessionData.shortsClicks} Shorts in ${Math.round(durationMinutes)} minutes. Still enjoying?`;
+    message = `You've watched ${Math.round(sessionData.shortsClicks)} Shorts in ${Math.round(durationMinutes)} minutes. Still enjoying?`;
   } else if (signals.lowEngagement) {
     nudgeType = 'low_engagement';
     message = `${Math.round(durationMinutes)} minutes of scrolling. Finding what you need?`;
@@ -211,7 +268,6 @@ function showAwarenessNudge(sessionData, signals, durationMinutes) {
     message = `You've been on YouTube for ${Math.round(durationMinutes)} minutes.`;
   }
   
-  // Browser notification
   browser.notifications.create({
     type: 'basic',
     title: 'YouTube Time Check',
@@ -219,7 +275,6 @@ function showAwarenessNudge(sessionData, signals, durationMinutes) {
     priority: 1
   });
   
-  // Send to content script for visual banner
   sendToActiveTab({
     action: 'showAwarenessBanner',
     message: message,
@@ -227,7 +282,6 @@ function showAwarenessNudge(sessionData, signals, durationMinutes) {
   });
 }
 
-// Level 2: Suggestion prompts (medium friction)
 function showSuggestionNudge(sessionData, signals, durationMinutes) {
   const suggestions = [];
   let nudgeType = '';
@@ -257,7 +311,6 @@ function showSuggestionNudge(sessionData, signals, durationMinutes) {
   });
 }
 
-// Level 3: Scroll resistance (high friction)
 function activateScrollResistance(sessionData, durationMinutes) {
   console.log('LEVEL 3 TRIGGERED', durationMinutes);
 
@@ -267,6 +320,7 @@ function activateScrollResistance(sessionData, durationMinutes) {
     context: sessionData.currentContext
   });
 }
+
 function sendToActiveTab(message) {
   browser.tabs.query({ active: true, currentWindow: true }).then(tabs => {
     if (tabs[0] && tabs[0].url.includes('youtube.com')) {
