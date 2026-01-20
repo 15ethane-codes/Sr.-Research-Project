@@ -106,7 +106,7 @@ function analyzeSession(sessionData) {
 
   // Slow decay if watching a normal video (Version 1.3.0-1.3.5))
   if (sessionData.currentContext === 'watching_video') {
-    const decayFactor = 0.85; // stronger decay per update
+    const decayFactor = 0.80; // stronger decay per update
     w.scrollDistance *= decayFactor;
     w.videoClicks *= decayFactor;
     w.shortsClicks *= decayFactor;
@@ -146,8 +146,8 @@ function analyzeSession(sessionData) {
   let doomProb = predictDoomscrollProbability(mlFeatures);
   console.log('ML doomscroll probability:', doomProb.toFixed(3));
 
-  let bayesDoom = false;
-  if (doomProb === null) {
+  let bayesDoom = false; // Needs some adjustment
+  if (doomProb < 0.65) {
     const pScroll = scrollIntensity > 2000 ? 0.7 : 0.3;
     const pDuration = durationMinutes > 20 ? 0.7 : 0.3;
     const pEngagement = engagementScore < 0.5 ? 0.6 : 0.4;
@@ -356,4 +356,43 @@ async function logNudge(sessionId, nudgeLevel, nudgeCount, durationMinutes) {
   }
 }
 
+
 window.testNudge = (x) => triggerNudge(x);
+
+// Expose for testing
+window.testNudge = (level = 1) => {
+  const fakeSession = {
+    sessionId: 'test-session',
+    currentContext: 'normal',
+    totalScrollDistance: 10000,
+    totalClicks: 2,
+    videoClicks: 2,
+    shortsClicks: 0,
+    sessionDuration: 3 * 60 * 1000 // 3 minutes
+  };
+  const fakeSignals = {
+    longDuration: true,
+    highScrolling: true,
+    lowEngagement: false,
+    fastScrolling: true,
+    lowClickRate: true,
+    shortsOverload: false
+  };
+
+  let durationMinutes = fakeSession.sessionDuration / 1000 / 60;
+
+  switch(level) {
+    case 1:
+      durationMinutes = 5; break;
+    case 2:
+      durationMinutes = 20, nudgeCount = 1; break;
+    case 3:
+      durationMinutes = 30, nudgeCount = 2; break;
+    default:
+      durationMinutes = 5;
+  }
+
+  triggerNudge(fakeSession, fakeSignals, durationMinutes);
+  console.log('Test nudge triggered for level', level);
+}
+
