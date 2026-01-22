@@ -106,7 +106,7 @@ function analyzeSession(sessionData) {
 
   // Slow decay if watching a normal video (Version 1.3.0-1.3.5))
   if (sessionData.currentContext === 'watching_video') {
-    const decayFactor = 0.80; // stronger decay per update
+    const decayFactor = 0.75; // stronger decay per update
     w.scrollDistance *= decayFactor;
     w.videoClicks *= decayFactor;
     w.shortsClicks *= decayFactor;
@@ -181,7 +181,7 @@ function analyzeSession(sessionData) {
 
   // Stronger ML decay while watching a video
   if (sessionData.currentContext === 'watching_video') {
-    const decayFactor = 0.85;
+    const decayFactor = 0.75;
     const decayedFeatures = {
       scrollIntensity: scrollIntensity * decayFactor,
       engagementScore: engagementScore * decayFactor,
