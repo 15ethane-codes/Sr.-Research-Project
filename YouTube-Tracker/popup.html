@@ -155,6 +155,21 @@
     </div>
   </div>
 
+  <!-- Check Frequency / Slider Section -->
+  <div class="controls" style="flex-direction: column; gap: 10px; margin-bottom: 15px;">
+    <div style="font-weight: 600; font-size: 13px;">Update Frequency</div>
+    <div>
+      <label><input type="radio" name="mlInterval" value="5"> 5 min</label>
+      <label><input type="radio" name="mlInterval" value="10"> 10 min</label>
+      <label><input type="radio" name="mlInterval" value="20"> 20 min</label>
+      <label><input type="radio" name="mlInterval" value="custom"> Custom</label>
+    </div>
+    <div style="display: flex; align-items: center; gap: 6px;">
+      <input type="range" id="customSlider" min="5" max="30" value="5" disabled>
+      <span id="customValue">5</span> min
+    </div>
+  </div>
+
   <div class="recent-activity">
     <h3>Recent Activity</h3>
     <div id="recentList">

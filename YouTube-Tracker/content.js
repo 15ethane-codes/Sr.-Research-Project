@@ -33,6 +33,14 @@ let scrollData = {
   lastContextChange: Date.now() // last time context changed
 };
 
+
+function formatDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 // ---- SCROLL TRACKING ----
 let scrollTimeout; // timeout to detect scroll pause
 let isActivelyScrolling = false; // whether user is actively scrolling
@@ -420,7 +428,7 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
       font-family: 'Segoe UI', sans-serif;
     ">
       <div style="font-size: 20px; font-weight: 600; margin-bottom: 8px; color: #333;">
-        You've been here ${duration} minutes
+        You've been here ${formatDuration(duration)}!
       </div>
       <div style="font-size: 14px; margin-bottom: 20px; color: #666;">
         What would you like to do?
