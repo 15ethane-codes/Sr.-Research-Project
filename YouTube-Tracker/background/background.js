@@ -162,7 +162,7 @@ function analyzeSession(sessionData) {
     sessionRuleStates[sessionData.sessionId] = false;
   } else {
 
-    // -------- SAFE DELTA ACCUMULATION --------
+    // SAFE DELTA ACCUMULATION
 
     if (w.lastTotalScroll === undefined) {
       w.lastTotalScroll = sessionData.totalScrollDistance || 0;
@@ -327,12 +327,12 @@ function showSuggestionNudge(sessionData, signals, durationMs) {
     suggestions.push('Switch to a different activity');
   }
 
-  sendToActiveTab({ action: 'showSuggestionPrompt', suggestions, durationMs, nudgeType });
+  sendToActiveTab({ action: 'showSuggestionPrompt', suggestions, duration: durationMs, nudgeType });
 }
 
 function activateScrollResistance(sessionData, durationMs) {
   console.log('LEVEL 3 TRIGGERED', formatDuration(durationMs));
-  sendToActiveTab({ action: 'activateScrollResistance', durationMs, context: sessionData.currentContext });
+  sendToActiveTab({ action: 'activateScrollResistance', duration: durationMs, context: sessionData.currentContext });
 }
 
 function sendToActiveTab(message) {
@@ -365,22 +365,50 @@ async function logNudge(sessionId, nudgeLevel, nudgeCount, durationMs) {
 
 // Expose for testing
 window.testNudge = (level = 1) => {
-  let durationMs = 5 * 60 * 1000;
+  let durationMs;
   let nudgeCountBackup = nudgeCount;
 
   switch(level) {
-    case 1: durationMs = 5 * 60 * 1000; nudgeCount = 0; break;
-    case 2: durationMs = 20 * 60 * 1000; nudgeCount = 1; break;
-    case 3: durationMs = 30 * 60 * 1000; nudgeCount = 2; break;
-    default: durationMs = 5 * 60 * 1000; nudgeCount = 0;
+    case 1:
+      durationMs = 5 * 60 * 1000; // 5 minutes
+      nudgeCount = 0;
+      break;
+    case 2:
+      durationMs = 20 * 60 * 1000; // 20 minutes
+      nudgeCount = 1;
+      break;
+    case 3:
+      durationMs = 30 * 60 * 1000; // 30 minutes
+      nudgeCount = 2;
+      break;
+    default:
+      durationMs = 5 * 60 * 1000;
+      nudgeCount = 0;
   }
 
-  const fakeSession = { sessionId: 'test-session', currentContext: 'normal', totalScrollDistance: 10000, totalClicks: 2, videoClicks: 2, shortsClicks: 0, sessionDuration: durationMs };
-  const fakeSignals = { longDuration: true, highScrolling: true, lowEngagement: false, fastScrolling: true, lowClickRate: true, shortsOverload: false };
+  const fakeSession = {
+    sessionId: 'test-session',
+    currentContext: 'normal',
+    totalScrollDistance: 10000,
+    totalClicks: 2,
+    videoClicks: 2,
+    shortsClicks: 0,
+    sessionDuration: durationMs
+  };
 
-  triggerNudge(fakeSession, fakeSignals, durationMs / 1000 / 60);
+  const fakeSignals = {
+    longDuration: true,
+    highScrolling: true,
+    lowEngagement: false,
+    fastScrolling: true,
+    lowClickRate: true,
+    shortsOverload: false
+  };
 
-  console.log('Test nudge triggered for level', level);
+  // pass durationMs directly in milliseconds
+  triggerNudge(fakeSession, fakeSignals, durationMs);
+
+  console.log(`Test nudge triggered for level ${level} with duration ${formatDuration(durationMs)}`);
 
   nudgeCount = nudgeCountBackup;
 };
