@@ -1,7 +1,7 @@
 // console.log when script loads
 console.log('YouTube Scrolling Tracker loaded');
 
-// ---- READY HANDSHAKE ----
+// READY HANDSHAKE
 // Notify background script that content script is ready
 let contentReady = false;
 browser.runtime.sendMessage({ action: 'contentReady' }).then(() => {
@@ -9,14 +9,14 @@ browser.runtime.sendMessage({ action: 'contentReady' }).then(() => {
   console.log('Content script ready for nudges');
 });
 
-// ---- DOMAIN CHECK ----
+// DOMAIN CHECK
 // Only run on YouTube domain
 if (!window.location.hostname.includes('youtube.com')) {
   console.log('Not on YouTube, script will not track');
   throw new Error('Not on YouTube domain');
 }
 
-// ---- INITIAL STATE ----
+// INITIAL STATE
 let scrollData = {
   startTime: Date.now(), // session start timestamp
   sessionId: 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9), // unique session ID
@@ -41,7 +41,7 @@ function formatDuration(ms) {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-// ---- SCROLL TRACKING ----
+// SCROLL TRACKING
 let scrollTimeout; // timeout to detect scroll pause
 let isActivelyScrolling = false; // whether user is actively scrolling
 let scrollPauseCount = 0; // number of scroll pauses detected
@@ -56,8 +56,9 @@ function saveScrollEvent(distance, y = window.scrollY) {
   }
 }
 
-// ---- WINDOW SCROLL EVENT ----
+// WINDOW SCROLL EVENT
 window.addEventListener('scroll', () => {
+  if (scrollData.currentContext === 'watching_video') return; // ignore regular scroll in main feed
   const currentTime = Date.now();
   const scrollY = window.scrollY;
   const scrollDistance = Math.abs(scrollY - scrollData.lastScrollPosition);
@@ -201,7 +202,7 @@ function trackVideoNavigation() {
   }
 }
 
-// ---- TRACK CURRENT VIDEO ----
+// TRACK CURRENT VIDEO
 function trackCurrentVideo() {
   const urlParams = new URLSearchParams(window.location.search);
   const videoId = urlParams.get('v');
@@ -228,7 +229,7 @@ function trackCurrentVideo() {
   }
 }
 
-// ---- CONTEXT TRACKING ----
+// CONTEXT TRACKING
 function updateContext() {
   const url = window.location.href;
   const previousContext = scrollData.currentContext;
@@ -251,7 +252,7 @@ function updateContext() {
   }
 }
 
-// ---- SPA URL CHANGE DETECTION ----
+// SPA URL CHANGE DETECTION
 let lastUrl = location.href;
 new MutationObserver(() => {
   const url = location.href;
@@ -263,12 +264,12 @@ new MutationObserver(() => {
   }
 }).observe(document, {subtree: true, childList: true});
 
-// ---- INITIAL CALLS ----
+// INITIAL CALLS
 updateContext();
 trackVideoNavigation();
 trackCurrentVideo();
 
-// ---- AUTO-SAVE FUNCTION ----
+// AUTO-SAVE FUNCTION
 function saveScrollData() {
   updateContext();
 
@@ -309,27 +310,27 @@ function saveScrollData() {
     .catch(error => console.error('Failed to save data:', error));
 }
 
-// ---- AUTO-SAVE INTERVAL ----
+// AUTO-SAVE INTERVAL
 console.log('Setting up auto-save interval (every 30 seconds)');
 setInterval(() => {
   console.log('Auto-save triggered');
   saveScrollData();
 }, 30000);
 
-// ---- SAVE ON UNLOAD ----
+// SAVE ON UNLOAD
 window.addEventListener('beforeunload', () => {
   console.log('Page closing, saving data');
   saveScrollData();
 });
 
-// ---- NUDGE SYSTEM ----
+// NUDGE SYSTEM 
 browser.runtime.onMessage.addListener((message) => {
   if (message.action === 'showAwarenessBanner') showAwarenessBanner(message.message, message.nudgeType);
   else if (message.action === 'showSuggestionPrompt') showSuggestionPrompt(message.suggestions, message.duration, message.nudgeType);
   else if (message.action === 'activateScrollResistance') activateScrollResistance(message.duration, message.context);
 });
 
-// ---- NUDGE LEVEL 1: AWARENESS BANNER ----
+//  NUDGE LEVEL 1: AWARENESS BANNER
 function showAwarenessBanner(message, nudgeType) {
   const existing = document.getElementById('awareness-banner');
   if (existing) existing.remove();
@@ -385,8 +386,28 @@ function showAwarenessBanner(message, nudgeType) {
   }, 8000);
 }
 
-// ---- NUDGE LEVEL 2: SUGGESTION PROMPT ----
+// NUDGE LEVEL 2: SUGGESTION PROMPT
 function showSuggestionPrompt(suggestions, duration, nudgeType) {
+    let safeDuration = 0;
+
+    if (typeof duration === 'number') {
+      safeDuration = duration;
+    } 
+    else if (typeof duration === 'string') {
+      // "279s"
+      if (duration.endsWith('s')) {
+        safeDuration = parseInt(duration, 10) * 1000;
+      } 
+      else {
+        // "4650"
+        safeDuration = Number(duration);
+      }
+    }
+
+    if (isNaN(safeDuration) || !safeDuration) {
+      console.warn('Invalid duration received:', duration);
+      safeDuration = 0;
+    }
   const existing = document.getElementById('suggestion-prompt');
   if (existing) existing.remove();
 
@@ -428,7 +449,7 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
       font-family: 'Segoe UI', sans-serif;
     ">
       <div style="font-size: 20px; font-weight: 600; margin-bottom: 8px; color: #333;">
-        You've been here ${formatDuration(duration)}!
+        You've been here ${formatDuration(safeDuration)}!
       </div>
       <div style="font-size: 14px; margin-bottom: 20px; color: #666;">
         What would you like to do?
@@ -478,7 +499,7 @@ function handleSuggestionClick(suggestion) {
   else if (suggestion.includes('Watch Later')) window.location.href = 'https://www.youtube.com/playlist?list=WL';
 }
 
-// ---- NUDGE LEVEL 3: SCROLL RESISTANCE ----
+// NUDGE LEVEL 3: SCROLL RESISTANCE
 let scrollResistanceActive = false;
 let scrollAccumulator = 0;
 const SCROLL_THRESHOLD = 100;
@@ -556,5 +577,4 @@ function removeScrollResistanceOverlay() {
   if (overlayElem) overlayElem.remove();
 }
 
-// ---- END OF SCRIPT ----
 console.log('YouTube Scrolling Tracker fully initialized');
