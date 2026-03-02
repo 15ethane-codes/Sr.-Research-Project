@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "YouTube Scrolling Tracker",
-  "version": "1.4.3",
+  "version": "1.4.5",
   "description": "Tracks YouTube scrolling behavior and detects doomscrolling patterns",
   
   "permissions": [
