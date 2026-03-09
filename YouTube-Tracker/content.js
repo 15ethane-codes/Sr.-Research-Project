@@ -1,16 +1,7 @@
 // console.log when script loads
 console.log('YouTube Scrolling Tracker loaded');
 
-// READY HANDSHAKE
-// Notify background script that content script is ready
-let contentReady = false;
-browser.runtime.sendMessage({ action: 'contentReady' }).then(() => {
-  contentReady = true;
-  console.log('Content script ready for nudges');
-});
-
 // DOMAIN CHECK
-// Only run on YouTube domain
 if (!window.location.hostname.includes('youtube.com')) {
   console.log('Not on YouTube, script will not track');
   throw new Error('Not on YouTube domain');
@@ -18,20 +9,71 @@ if (!window.location.hostname.includes('youtube.com')) {
 
 // INITIAL STATE
 let scrollData = {
-  startTime: Date.now(), // session start timestamp
-  sessionId: 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9), // unique session ID
-  scrollEvents: [], // array of scroll events
-  videoClicks: 0, // count of regular video clicks
-  shortsClicks: 0, // count of Shorts clicks
-  totalScrollDistance: 0, // total scroll distance tracked
-  lastScrollPosition: 0, // previous scroll position
-  videoInteractions: [], // detailed video/short interactions
-  currentVideo: null, // current video ID
-  currentContext: 'unknown', // current page context
-  timeInShorts: 0, // cumulative time in Shorts
-  timeWatchingVideo: 0, // cumulative time watching videos
-  lastContextChange: Date.now() // last time context changed
+  startTime: Date.now(),
+  sessionId: null,          // assigned by background
+  resumeOffset: 0,          // prior session duration carried over from snapshot
+  scrollEvents: [],
+  videoClicks: 0,
+  shortsClicks: 0,
+  totalScrollDistance: 0,
+  lastScrollPosition: 0,
+  videoInteractions: [],
+  currentVideo: null,
+  currentContext: 'unknown',
+  timeInShorts: 0,
+  timeWatchingVideo: 0,
+  lastContextChange: Date.now()
 };
+
+// SESSION HANDSHAKE
+// Background returns { sessionId, snapshot }
+// snapshot is the last saveScrollData payload from a previous load of this tab
+// If snapshot exists, restore counters so duration and scrolls continue from where they left off
+let contentReady = false;
+
+browser.runtime.sendMessage({ action: 'requestSessionId' })
+  .then(response => {
+    if (response && response.sessionId) {
+      scrollData.sessionId = response.sessionId;
+      console.log('Session ID received from background:', scrollData.sessionId);
+    } else {
+      scrollData.sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      console.warn('No session ID from background, using fallback:', scrollData.sessionId);
+    }
+
+    // Restore state from snapshot if this is a resumed session
+    if (response && response.snapshot) {
+      const s = response.snapshot;
+      console.log('Resuming from snapshot:', {
+        duration: Math.round(s.sessionDuration / 1000) + 's',
+        scrollDistance: s.totalScrollDistance,
+        videoClicks: s.videoClicks,
+        shortsClicks: s.shortsClicks,
+        scrollEventsCount: s.scrollEvents ? s.scrollEvents.length : 0
+      });
+
+      // Carry over accumulated counters
+      scrollData.resumeOffset        = s.sessionDuration || 0;
+      scrollData.videoClicks         = s.videoClicks || 0;
+      scrollData.shortsClicks        = s.shortsClicks || 0;
+      scrollData.totalScrollDistance = s.totalScrollDistance || 0;
+      scrollData.lastScrollPosition  = s.lastScrollPosition || 0;
+      scrollData.videoInteractions   = s.videoInteractions || [];
+      scrollData.timeInShorts        = s.timeInShorts || 0;
+      scrollData.timeWatchingVideo   = s.timeWatchingVideo || 0;
+      scrollData.currentVideo        = s.currentVideo || null;
+      scrollData.scrollEvents        = s.scrollEvents || [];
+      scrollPauseCount               = s.scrollPauseCount || 0;
+    }
+
+    contentReady = true;
+    console.log('Content script ready for nudges');
+  })
+  .catch(err => {
+    scrollData.sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    contentReady = true;
+    console.warn('requestSessionId failed, using fallback:', scrollData.sessionId, err);
+  });
 
 
 function formatDuration(ms) {
@@ -42,12 +84,11 @@ function formatDuration(ms) {
 }
 
 // SCROLL TRACKING
-let scrollTimeout; // timeout to detect scroll pause
-let isActivelyScrolling = false; // whether user is actively scrolling
-let scrollPauseCount = 0; // number of scroll pauses detected
-let lastScrollSaveTime = Date.now(); // last timestamp scroll was saved
+let scrollTimeout;
+let isActivelyScrolling = false;
+let scrollPauseCount = 0;
+let lastScrollSaveTime = Date.now();
 
-// Function to save meaningful scroll events
 function saveScrollEvent(distance, y = window.scrollY) {
   const t = Date.now();
   if (distance > 50 || t - lastScrollSaveTime > 500) {
@@ -56,23 +97,17 @@ function saveScrollEvent(distance, y = window.scrollY) {
   }
 }
 
-// WINDOW SCROLL EVENT
 window.addEventListener('scroll', () => {
-  if (scrollData.currentContext === 'watching_video') return; // ignore regular scroll in main feed
+  if (scrollData.currentContext === 'watching_video') return;
   const currentTime = Date.now();
   const scrollY = window.scrollY;
   const scrollDistance = Math.abs(scrollY - scrollData.lastScrollPosition);
 
   isActivelyScrolling = true;
-
-  // Save scroll if significant or enough time passed
   saveScrollEvent(scrollDistance, scrollY);
-
-  // Track total distance
   scrollData.totalScrollDistance += scrollDistance;
   scrollData.lastScrollPosition = scrollY;
 
-  // Detect scroll pause
   clearTimeout(scrollTimeout);
   scrollTimeout = setTimeout(() => {
     isActivelyScrolling = false;
@@ -83,30 +118,24 @@ window.addEventListener('scroll', () => {
   }, 2000);
 });
 
-// ---- WHEEL EVENT (Shorts) ----
+// WHEEL EVENT (Shorts)
 window.addEventListener('wheel', (event) => {
   if (!scrollData.currentContext.includes('shorts')) return;
 
   const currentTime = Date.now();
   const deltaY = Math.abs(event.deltaY);
 
-  // Only track meaningful movement
   if (deltaY > 10) {
     scrollData.totalScrollDistance += deltaY;
-
     if ((currentTime - lastScrollSaveTime) > 500) {
-      scrollData.scrollEvents.push({
-        timestamp: currentTime,
-        scrollY: window.scrollY,
-        scrollDistance: deltaY
-      });
+      scrollData.scrollEvents.push({ timestamp: currentTime, scrollY: window.scrollY, scrollDistance: deltaY });
       lastScrollSaveTime = currentTime;
       console.log('Shorts wheel event saved, total events:', scrollData.scrollEvents.length);
     }
   }
 }, { passive: true });
 
-// ---- TOUCH EVENTS (Shorts mobile/touch) ----
+// TOUCH EVENTS (Shorts)
 let touchStartY = 0;
 window.addEventListener('touchstart', (event) => {
   if (!scrollData.currentContext.includes('shorts')) return;
@@ -122,33 +151,24 @@ window.addEventListener('touchmove', (event) => {
 
   if (touchDistance > 50) {
     scrollData.totalScrollDistance += touchDistance;
-
     if ((currentTime - lastScrollSaveTime) > 500) {
-      scrollData.scrollEvents.push({
-        timestamp: currentTime,
-        scrollY: 0, // Shorts don't have scrollY
-        scrollDistance: touchDistance
-      });
+      scrollData.scrollEvents.push({ timestamp: currentTime, scrollY: 0, scrollDistance: touchDistance });
       lastScrollSaveTime = currentTime;
       console.log('Shorts touch event saved, total events:', scrollData.scrollEvents.length);
     }
-
-    touchStartY = touchY; // update start for next move
+    touchStartY = touchY;
   }
 }, { passive: true });
 
-// ---- VIDEO & SHORTS TRACKING ----
+// VIDEO & SHORTS TRACKING
 let lastWatchedVideoId = null;
 let lastWatchedShortId = null;
 
-// Detect navigation to new video or Shorts
 function trackVideoNavigation() {
   const url = window.location.href;
 
-  // Regular video
   if (url.includes('/watch?v=')) {
     const videoId = new URLSearchParams(window.location.search).get('v');
-
     if (videoId && videoId !== lastWatchedVideoId) {
       scrollData.videoClicks++;
       lastWatchedVideoId = videoId;
@@ -174,7 +194,6 @@ function trackVideoNavigation() {
     }
   }
 
-  // Shorts
   else if (url.includes('/shorts/')) {
     const shortId = url.split('/shorts/')[1]?.split('?')[0];
     if (shortId && shortId !== lastWatchedShortId) {
@@ -202,20 +221,17 @@ function trackVideoNavigation() {
   }
 }
 
-// TRACK CURRENT VIDEO
 function trackCurrentVideo() {
   const urlParams = new URLSearchParams(window.location.search);
   const videoId = urlParams.get('v');
 
   if (videoId && videoId !== scrollData.currentVideo) {
     scrollData.currentVideo = videoId;
-
     setTimeout(() => {
       const titleElement = document.querySelector('h1.ytd-watch-metadata yt-formatted-string') ||
                            document.querySelector('h1.title yt-formatted-string') ||
                            document.querySelector('h1 yt-formatted-string');
       const title = titleElement ? titleElement.textContent.trim() : 'Unknown Video';
-
       scrollData.videoInteractions.push({
         timestamp: Date.now(),
         type: 'video_watch',
@@ -223,7 +239,6 @@ function trackCurrentVideo() {
         videoTitle: title,
         url: window.location.href
       });
-
       console.log('Now watching:', title);
     }, 1500);
   }
@@ -262,18 +277,25 @@ new MutationObserver(() => {
     trackVideoNavigation();
     setTimeout(trackCurrentVideo, 1000);
   }
-}).observe(document, {subtree: true, childList: true});
+}).observe(document, { subtree: true, childList: true });
 
-// INITIAL CALLS
 updateContext();
 trackVideoNavigation();
 trackCurrentVideo();
 
-// AUTO-SAVE FUNCTION
+// AUTO-SAVE
+// sessionDuration = time elapsed this load + any prior duration carried from snapshot
 function saveScrollData() {
+  if (!scrollData.sessionId) {
+    console.warn('saveScrollData called before session ID assigned, skipping');
+    return;
+  }
+
   updateContext();
 
   const totalClicks = scrollData.videoClicks + scrollData.shortsClicks;
+  const elapsedThisLoad = Date.now() - scrollData.startTime;
+  const sessionDuration = scrollData.resumeOffset + elapsedThisLoad;
 
   const sessionData = {
     sessionId: scrollData.sessionId,
@@ -289,7 +311,7 @@ function saveScrollData() {
     currentContext: scrollData.currentContext,
     timeInShorts: scrollData.timeInShorts,
     timeWatchingVideo: scrollData.timeWatchingVideo,
-    sessionDuration: Date.now() - scrollData.startTime,
+    sessionDuration: sessionDuration,   // accurate running total
     url: window.location.href,
     timestamp: Date.now(),
     scrollPauseCount: scrollPauseCount,
@@ -298,7 +320,7 @@ function saveScrollData() {
 
   console.log('Attempting to save data:', {
     sessionId: scrollData.sessionId,
-    duration: Math.round(sessionData.sessionDuration / 1000) + 's',
+    duration: Math.round(sessionDuration / 1000) + 's',
     context: scrollData.currentContext,
     scrolls: scrollData.scrollEvents.length,
     videos: scrollData.videoClicks,
@@ -310,27 +332,55 @@ function saveScrollData() {
     .catch(error => console.error('Failed to save data:', error));
 }
 
-// AUTO-SAVE INTERVAL
 console.log('Setting up auto-save interval (every 30 seconds)');
 setInterval(() => {
   console.log('Auto-save triggered');
   saveScrollData();
 }, 30000);
 
-// SAVE ON UNLOAD
+// SAVE & NOTIFY ON UNLOAD
 window.addEventListener('beforeunload', () => {
-  console.log('Page closing, saving data');
-  saveScrollData();
+  console.log('Page closing, notifying background and saving data');
+
+  updateContext();
+  const totalClicks = scrollData.videoClicks + scrollData.shortsClicks;
+  const elapsedThisLoad = Date.now() - scrollData.startTime;
+  const sessionDuration = scrollData.resumeOffset + elapsedThisLoad;
+
+  const snapshot = {
+    sessionId: scrollData.sessionId,
+    startTime: scrollData.startTime,
+    scrollEvents: scrollData.scrollEvents,
+    videoClicks: scrollData.videoClicks,
+    shortsClicks: scrollData.shortsClicks,
+    totalClicks: totalClicks,
+    totalScrollDistance: scrollData.totalScrollDistance,
+    lastScrollPosition: scrollData.lastScrollPosition,
+    videoInteractions: scrollData.videoInteractions,
+    currentVideo: scrollData.currentVideo,
+    currentContext: scrollData.currentContext,
+    timeInShorts: scrollData.timeInShorts,
+    timeWatchingVideo: scrollData.timeWatchingVideo,
+    sessionDuration: sessionDuration,
+    url: window.location.href,
+    timestamp: Date.now(),
+    scrollPauseCount: scrollPauseCount,
+    isActivelyScrolling: isActivelyScrolling
+  };
+
+  // Send snapshot to background for pause storage, then save
+  browser.runtime.sendMessage({ action: 'youtubeClosed', snapshot }).catch(() => {});
+  browser.runtime.sendMessage({ action: 'saveScrollData', data: snapshot }).catch(() => {});
 });
 
-// NUDGE SYSTEM 
+// NUDGE SYSTEM
 browser.runtime.onMessage.addListener((message) => {
   if (message.action === 'showAwarenessBanner') showAwarenessBanner(message.message, message.nudgeType);
   else if (message.action === 'showSuggestionPrompt') showSuggestionPrompt(message.suggestions, message.duration, message.nudgeType);
   else if (message.action === 'activateScrollResistance') activateScrollResistance(message.duration, message.context);
 });
 
-//  NUDGE LEVEL 1: AWARENESS BANNER
+// NUDGE LEVEL 1: AWARENESS BANNER
 function showAwarenessBanner(message, nudgeType) {
   const existing = document.getElementById('awareness-banner');
   if (existing) existing.remove();
@@ -376,38 +426,25 @@ function showAwarenessBanner(message, nudgeType) {
     </style>
   `;
   document.body.appendChild(banner);
-
-  document.getElementById('banner-close').addEventListener('click', () => {
-    banner.remove();
-  });
-
-  setTimeout(() => {
-    if (banner.parentElement) banner.remove();
-  }, 8000);
+  document.getElementById('banner-close').addEventListener('click', () => banner.remove());
+  setTimeout(() => { if (banner.parentElement) banner.remove(); }, 8000);
 }
 
 // NUDGE LEVEL 2: SUGGESTION PROMPT
 function showSuggestionPrompt(suggestions, duration, nudgeType) {
-    let safeDuration = 0;
+  let safeDuration = 0;
 
-    if (typeof duration === 'number') {
-      safeDuration = duration;
-    } 
-    else if (typeof duration === 'string') {
-      // "279s"
-      if (duration.endsWith('s')) {
-        safeDuration = parseInt(duration, 10) * 1000;
-      } 
-      else {
-        // "4650"
-        safeDuration = Number(duration);
-      }
-    }
+  if (typeof duration === 'number') {
+    safeDuration = duration;
+  } else if (typeof duration === 'string') {
+    safeDuration = duration.endsWith('s') ? parseInt(duration, 10) * 1000 : Number(duration);
+  }
 
-    if (isNaN(safeDuration) || !safeDuration) {
-      console.warn('Invalid duration received:', duration);
-      safeDuration = 0;
-    }
+  if (isNaN(safeDuration) || !safeDuration) {
+    console.warn('Invalid duration received:', duration);
+    safeDuration = 0;
+  }
+
   const existing = document.getElementById('suggestion-prompt');
   if (existing) existing.remove();
 
@@ -468,10 +505,7 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
     </div>
     <div id="prompt-backdrop" style="
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      top: 0; left: 0; right: 0; bottom: 0;
       background: rgba(0,0,0,0.6);
       z-index: 999998;
     "></div>
@@ -510,7 +544,6 @@ function activateScrollResistance(duration, context) {
   console.log('SCROLL RESISTANCE ACTIVATED');
 
   showScrollResistanceOverlay(duration, context);
-
   window.addEventListener('wheel', resistScroll, { passive: false });
   window.addEventListener('touchmove', resistScrollTouch, { passive: false });
 
@@ -547,22 +580,16 @@ let overlayElem;
 function showScrollResistanceOverlay(duration, context) {
   overlayElem = document.createElement('div');
   overlayElem.id = 'scroll-resistance-overlay';
-  overlayElem.style.position = 'fixed';
-  overlayElem.style.top = '0';
-  overlayElem.style.left = '0';
-  overlayElem.style.right = '0';
-  overlayElem.style.bottom = '0';
-  overlayElem.style.background = 'rgba(255,255,255,0.3)';
-  overlayElem.style.backdropFilter = 'blur(4px)';
-  overlayElem.style.zIndex = '9999999';
-  overlayElem.style.display = 'flex';
-  overlayElem.style.alignItems = 'center';
-  overlayElem.style.justifyContent = 'center';
-  overlayElem.style.fontSize = '28px';
-  overlayElem.style.fontWeight = '700';
-  overlayElem.style.color = '#e74c3c';
-  overlayElem.style.fontFamily = 'Segoe UI, sans-serif';
-  overlayElem.innerText = 'Slow down! You’ve been scrolling too much';
+  overlayElem.style.cssText = `
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,0.3);
+    backdrop-filter: blur(4px);
+    z-index: 9999999;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 700; color: #e74c3c;
+    font-family: Segoe UI, sans-serif;
+  `;
+  overlayElem.innerText = "Slow down! You've been scrolling too much";
   document.body.appendChild(overlayElem);
 }
 
