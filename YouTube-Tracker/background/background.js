@@ -137,7 +137,45 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  // Content script calls this when user clicks a suggestion button
+  if (message.action === 'clearActiveNudge') {
+    browser.storage.local.remove('activeNudge').then(() => {
+      console.log('[Nudge] Active nudge cleared from storage');
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+
+  // Close the sender tab — window.close() does not work for user-opened tabs in Firefox
+  if (message.action === 'closeTab') {
+    const tabId = sender.tab ? sender.tab.id : null;
+    if (tabId) {
+      console.log('[Nudge] Closing tab', tabId, 'on user request');
+      browser.tabs.remove(tabId).catch(err => console.warn('Could not close tab:', err));
+    }
+    sendResponse({ success: true });
+    return false;
+  }
+
   return false;
+});
+
+// When any YouTube tab becomes active, check if a persistent nudge should be shown
+browser.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await browser.tabs.get(activeInfo.tabId);
+    if (!tab.url || !tab.url.includes('youtube.com')) return;
+    const result = await browser.storage.local.get(['activeNudge']);
+    if (result.activeNudge) {
+      console.log('[Nudge] Tab activated, re-showing persistent nudge on tab', activeInfo.tabId);
+      browser.tabs.sendMessage(activeInfo.tabId, {
+        action: 'showSuggestionPrompt',
+        ...result.activeNudge
+      }).catch(err => console.log('Could not re-show nudge on tab', activeInfo.tabId, err));
+    }
+  } catch (e) {
+    // Tab may not be ready yet — content script will check on load
+  }
 });
 
 // Tab closed by browser — safety net if beforeunload didn't fire
@@ -395,7 +433,7 @@ function showAwarenessNudge(sessionData, signals, durationMs) {
   sendToActiveTab({ action: 'showAwarenessBanner', message, nudgeType });
 }
 
-function showSuggestionNudge(sessionData, signals, durationMs) {
+async function showSuggestionNudge(sessionData, signals, durationMs) {
   const suggestions = [];
   let nudgeType = '';
 
@@ -416,7 +454,13 @@ function showSuggestionNudge(sessionData, signals, durationMs) {
     suggestions.push('Switch to a different activity');
   }
 
-  sendToActiveTab({ action: 'showSuggestionPrompt', suggestions, duration: durationMs, nudgeType });
+  // Persist nudge so all tabs (and reloads) show it until user clicks a choice
+  const nudgeData = { suggestions, duration: durationMs, nudgeType };
+  await browser.storage.local.set({ activeNudge: nudgeData });
+  console.log('[Nudge] Active nudge saved to storage:', nudgeType);
+
+  // Broadcast to every open YouTube tab, not just the active one
+  sendToAllYouTubeTabs({ action: 'showSuggestionPrompt', suggestions, duration: durationMs, nudgeType });
 }
 
 function activateScrollResistance(sessionData, durationMs) {
@@ -429,6 +473,18 @@ function sendToActiveTab(message) {
     if (tabs[0] && tabs[0].url.includes('youtube.com')) {
       browser.tabs.sendMessage(tabs[0].id, message).catch(err => console.log('Could not send message to tab:', err));
     }
+  });
+}
+
+// Send a message to every open YouTube tab
+function sendToAllYouTubeTabs(message) {
+  browser.tabs.query({ url: '*://*.youtube.com/*' }).then(tabs => {
+    tabs.forEach(tab => {
+      browser.tabs.sendMessage(tab.id, message).catch(err =>
+        console.log('Could not send to tab', tab.id, ':', err)
+      );
+    });
+    console.log('[Nudge] Broadcast to', tabs.length, 'YouTube tab(s)');
   });
 }
 
