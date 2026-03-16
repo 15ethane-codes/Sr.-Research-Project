@@ -380,6 +380,17 @@ browser.runtime.onMessage.addListener((message) => {
   else if (message.action === 'activateScrollResistance') activateScrollResistance(message.duration, message.context);
 });
 
+// On load, check if a persistent level 2 nudge is waiting to be shown
+// Covers: tab reload, new tab opened while nudge is active
+browser.storage.local.get(['activeNudge']).then(result => {
+  if (result.activeNudge) {
+    console.log('[Nudge] Persistent nudge found on load, showing prompt');
+    const { suggestions, duration, nudgeType } = result.activeNudge;
+    // Small delay so the page DOM is ready
+    setTimeout(() => showSuggestionPrompt(suggestions, duration, nudgeType), 800);
+  }
+}).catch(err => console.warn('Could not check activeNudge on load:', err));
+
 // NUDGE LEVEL 1: AWARENESS BANNER
 function showAwarenessBanner(message, nudgeType) {
   const existing = document.getElementById('awareness-banner');
@@ -430,7 +441,7 @@ function showAwarenessBanner(message, nudgeType) {
   setTimeout(() => { if (banner.parentElement) banner.remove(); }, 8000);
 }
 
-// NUDGE LEVEL 2: SUGGESTION PROMPT
+// NUDGE LEVEL 2: SUGGESTION PROMPT (persistent — only closes when user picks a choice)
 function showSuggestionPrompt(suggestions, duration, nudgeType) {
   let safeDuration = 0;
 
@@ -489,19 +500,9 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
         You've been here ${formatDuration(safeDuration)}!
       </div>
       <div style="font-size: 14px; margin-bottom: 20px; color: #666;">
-        What would you like to do?
+        Make a choice to continue.
       </div>
       ${suggestionButtons}
-      <button id="prompt-dismiss" style="
-        width: 100%;
-        padding: 10px;
-        background: #f5f5f5;
-        border: none;
-        border-radius: 6px;
-        color: #666;
-        cursor: pointer;
-        font-size: 13px;
-      ">Keep browsing</button>
     </div>
     <div id="prompt-backdrop" style="
       position: fixed;
@@ -512,25 +513,67 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
   `;
   document.body.appendChild(prompt);
 
+  // No dismiss button, no backdrop click — must pick a choice
   prompt.querySelectorAll('.suggestion-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      handleSuggestionClick(suggestions[parseInt(btn.dataset.index)]);
-      prompt.remove();
+      const chosen = suggestions[parseInt(btn.dataset.index)];
+      // Clear from storage first, then execute the action
+      browser.runtime.sendMessage({ action: 'clearActiveNudge' }).then(() => {
+        prompt.remove();
+        handleSuggestionClick(chosen);
+      }).catch(() => {
+        prompt.remove();
+        handleSuggestionClick(chosen);
+      });
     });
   });
+}
 
-  document.getElementById('prompt-dismiss').addEventListener('click', () => prompt.remove());
-  document.getElementById('prompt-backdrop').addEventListener('click', () => prompt.remove());
+function closeThisTab() {
+  // window.close() only works on script-opened tabs in Firefox
+  // So we ask the background to close it via browser.tabs.remove
+  browser.runtime.sendMessage({ action: 'closeTab' }).catch(() => {});
 }
 
 function handleSuggestionClick(suggestion) {
   console.log('User selected suggestion:', suggestion);
-  if (suggestion.includes('break') || suggestion.includes('Close')) window.close();
-  else if (suggestion.includes('Search')) {
+
+  // Shorts feed choices
+  if (suggestion.includes('Watch a full video instead')) {
+    window.location.href = 'https://www.youtube.com';
+  }
+  else if (suggestion.includes('subscriptions')) {
+    window.location.href = 'https://www.youtube.com/feed/subscriptions';
+  }
+  else if (suggestion.includes('5-minute break')) {
+    closeThisTab();
+  }
+  // Low engagement choices
+  else if (suggestion.includes('Search for something specific')) {
+    const searchBox = document.querySelector('input#search');
+    if (searchBox) {
+      searchBox.focus();
+    } else {
+      window.location.href = 'https://www.youtube.com';
+    }
+  }
+  else if (suggestion.includes('Watch Later')) {
+    window.location.href = 'https://www.youtube.com/playlist?list=WL';
+  }
+  else if (suggestion.includes('Close YouTube for now')) {
+    closeThisTab();
+  }
+  // General break choices
+  else if (suggestion.includes('Take a short break')) {
+    closeThisTab();
+  }
+  else if (suggestion.includes('Find something specific')) {
     const searchBox = document.querySelector('input#search');
     if (searchBox) searchBox.focus();
-  } else if (suggestion.includes('subscriptions')) window.location.href = 'https://www.youtube.com/feed/subscriptions';
-  else if (suggestion.includes('Watch Later')) window.location.href = 'https://www.youtube.com/playlist?list=WL';
+  }
+  else if (suggestion.includes('Switch to a different activity')) {
+    // Leave alone for now — no action
+  }
 }
 
 // NUDGE LEVEL 3: SCROLL RESISTANCE
