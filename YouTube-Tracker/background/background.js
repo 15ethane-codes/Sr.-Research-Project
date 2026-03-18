@@ -1,4 +1,9 @@
-// Version 1.6.0
+// Version 1.7.2
+/* Notes guide: 
+   Normal comments are general explanations of what the code is doing.
+   Capailized comments like --- THIS --- are specific notes for code reviewers, highlighting important logic or decisions that may not be obvious.
+*/
+
 console.log('Background script loaded and ready');
 
 let nudgeLevel = 0;
@@ -18,8 +23,32 @@ const SESSION_TIMEOUT = 10 * 60 * 1000;
 const sessionRuleStates = {};
 const mlWindowState = {};
 
+// 0.5 min (30s) for testing — storage value only applies to nextAllowedAnalyze spacing
+// change this to 5 when shipping
 let mlCalculationInterval = 0.5;
 const nextAllowedAnalyze = {};
+
+// Track which session has already triggered the interval lock
+// so we only write to storage once per session, not on every analysis call
+let lockedSessionId = null;
+
+// Load saved interval from storage on startup to fix in-memory desync
+// If user never set one, default to 5 minutes
+// On startup, apply stored interval to in-memory variable
+// If nothing saved yet, write 5 min as the default for the popup to display
+// mlCalculationInterval stays 0.5 (30s) for testing — remove this override when shipping
+// Ensure storage has a default for the popup to display
+// mlCalculationInterval stays 0.5 (30s) for testing
+// When shipping: uncomment mlCalculationInterval = result.mlInterval || 5;
+browser.storage.local.get(['mlInterval']).then(result => {
+  if (!result.mlInterval) {
+    browser.storage.local.set({ mlInterval: 5 });
+    console.log('[Interval] No saved interval, storage defaulted to 5 min display');
+  } else {
+    console.log('[Interval] Storage interval:', result.mlInterval, 'min (running at 0.5 for testing)');
+  }
+  // mlCalculationInterval = result.mlInterval || 5; // uncomment when shipping
+}).catch(err => console.warn('[Interval] Could not load interval from storage:', err));
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received from content script:', message.action);
@@ -47,6 +76,13 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId = 'session_' + now + '_' + Math.random().toString(36).substr(2, 9);
       sessionRuleStates[sessionId] = false;
       delete mlWindowState[sessionId];
+      // Genuinely new session — clear lock and confirmation so picker shows again
+      // Resume sessions do NOT clear this — same session, same confirmed interval
+      browser.storage.local.set({
+        intervalLocked: false,
+        intervalConfirmedForSession: null
+      });
+      lockedSessionId = null;
       console.log('New session created for tab', tabId, ':', sessionId);
     }
 
@@ -101,9 +137,20 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       `nextAnalysis: ${now >= nextTime ? 'NOW' : secondsUntilNext + 's'}`
     );
 
+    // Lock interval on first saveScrollData for this session
+    // Fires immediately when YouTube opens — not tied to grace period or analysis
+    if (lockedSessionId !== sessionId) {
+      lockedSessionId = sessionId;
+      browser.storage.local.set({ intervalLocked: true });
+      console.log('[Interval] Locked at', mlCalculationInterval, 'min for session', sessionId.slice(-8));
+    }
+
     if (now >= nextTime) {
-      analyzeSession(message.data);
-      nextAllowedAnalyze[sessionId] = now + mlCalculationInterval * 60 * 1000;
+      const analysisResult = analyzeSession(message.data);
+      // Only advance the timer if analysis ran past grace period
+      if (analysisResult !== null) {
+        nextAllowedAnalyze[sessionId] = now + mlCalculationInterval * 60 * 1000;
+      }
     } else {
       // analysis on cooldown — state already logged above
     }
@@ -134,6 +181,16 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'contentReady' && sender.tab) {
     console.log('Tab ready for nudges:', sender.tab.id);
     sendResponse({ success: true });
+    return false;
+  }
+
+  // Popup calls this to know which session is currently active
+  // Used to decide whether to show the interval picker or not
+  if (message.action === 'getCurrentSessionId') {
+    // Find any active YouTube tab's session ID
+    const activeTabId = Object.keys(tabSessions)[0];
+    const sessionId = activeTabId ? tabSessions[activeTabId] : null;
+    sendResponse({ sessionId });
     return false;
   }
 
@@ -258,6 +315,15 @@ function predictDoomscrollProbability(features) {
   return Math.min(1, features.scrollIntensity / 5000 + features.engagementScore / 2);
 }
 
+// Calculate earned cooldown duration based on continuous watch time
+function calcEarnedCooldown(watchMs) {
+  const watchMin = watchMs / 1000 / 60;
+  if (watchMin < 2)  return 0;               // under 2 min — no cooldown earned
+  if (watchMin < 5)  return 1 * 60 * 1000;   // 2-5 min  → 1 min cooldown
+  if (watchMin < 10) return 3 * 60 * 1000;   // 5-10 min → 3 min cooldown
+  return 6 * 60 * 1000;                      // 10+ min  → 6 min cooldown
+}
+
 function analyzeSession(sessionData) {
   if (!mlWindowState[sessionData.sessionId]) {
     mlWindowState[sessionData.sessionId] = {
@@ -265,7 +331,12 @@ function analyzeSession(sessionData) {
       videoClicks: 0,
       shortsClicks: 0,
       durationMs: 0,
-      lastReset: Date.now()
+      lastReset: Date.now(),
+      // Watch cooldown tracking
+      currentWatchStart: null,   // when user entered watching_video this time
+      continuousWatchMs: 0,      // how long the current/last continuous watch was
+      cooldownUntil: 0,          // timestamp when earned cooldown expires
+      lastContext: null          // context from previous analysis call
     };
   }
 
@@ -273,71 +344,111 @@ function analyzeSession(sessionData) {
   const now = Date.now();
   const rawDurationMs = sessionData.sessionDuration;
   const rawMinutes = rawDurationMs / 1000 / 60;
+  const currentContext = sessionData.currentContext;
 
   const GRACE_PERIOD_MAIN = 2;
   const GRACE_PERIOD_SHORTS = 0.5;
-  const currentGrace = sessionData.currentContext === 'shorts_feed' ? GRACE_PERIOD_SHORTS : GRACE_PERIOD_MAIN;
+  const currentGrace = currentContext === 'shorts_feed' ? GRACE_PERIOD_SHORTS : GRACE_PERIOD_MAIN;
 
-  // Grace period uses total session duration (includes resumed time),
-  // so a resumed session that was already 2+ minutes old skips grace immediately
   if (rawMinutes < currentGrace) {
     console.log(
       `[Analysis] Grace period (${rawMinutes.toFixed(2)}m < ${currentGrace}m) | ` +
       `Session: ...${sessionData.sessionId.slice(-8)} | ` +
-      `Context: ${sessionData.currentContext} | ` +
-      `totalScrollDist: ${Math.round(sessionData.totalScrollDistance || 0)} | ` +
-      `clicks: ${sessionData.totalClicks || 0}`
+      `Context: ${currentContext}`
     );
-    return false;
+    return null; // null = grace period, false = ran but not doomscrolling
   }
 
-  if (sessionData.currentContext === 'watching_video') {
+  // ---- WATCH COOLDOWN STATE MACHINE ----
+  if (currentContext === 'watching_video') {
+    // Entered watch context — start timer if not already running
+    if (!w.currentWatchStart) {
+      w.currentWatchStart = now;
+      w.continuousWatchMs = 0;
+      console.log(`[Cooldown] Watch started for session ...${sessionData.sessionId.slice(-8)}`);
+    } else {
+      // Still watching — update continuous watch duration
+      w.continuousWatchMs = now - w.currentWatchStart;
+    }
+
+    // Decay rolling window while watching — keeps mlBased from staying elevated
     const decayFactor = 0.75;
     w.scrollDistance *= decayFactor;
-    w.videoClicks *= decayFactor;
-    w.shortsClicks *= decayFactor;
-    w.durationMs *= decayFactor;
-    sessionRuleStates[sessionData.sessionId] = false;
+    w.videoClicks   *= decayFactor;
+    w.shortsClicks  *= decayFactor;
+    w.durationMs    *= decayFactor;
+
   } else {
+    // Not watching video
+    // Detect transition: were we just watching? If so, calculate and award cooldown
+    if (w.lastContext === 'watching_video' && w.currentWatchStart !== null) {
+      const finalWatchMs = now - w.currentWatchStart;
+      const earned = calcEarnedCooldown(finalWatchMs);
+
+      if (earned > 0) {
+        w.cooldownUntil = now + earned;
+        console.log(
+          `[Cooldown] Earned ${earned / 1000}s cooldown after watching ` +
+          `${(finalWatchMs / 1000 / 60).toFixed(1)}min | ` +
+          `expires at +${earned / 1000}s | ` +
+          `session ...${sessionData.sessionId.slice(-8)}`
+        );
+      } else {
+        console.log(
+          `[Cooldown] No cooldown — watch was only ` +
+          `${(finalWatchMs / 1000 / 60).toFixed(1)}min (< 2 min threshold)`
+        );
+      }
+
+      // Reset watch tracking regardless
+      w.currentWatchStart = null;
+      w.continuousWatchMs = 0;
+    }
+
+    // Accumulate rolling window deltas
     if (w.lastTotalScroll === undefined) w.lastTotalScroll = sessionData.totalScrollDistance || 0;
     if (w.lastVideoClicks === undefined) w.lastVideoClicks = sessionData.videoClicks || 0;
     if (w.lastShortsClicks === undefined) w.lastShortsClicks = sessionData.shortsClicks || 0;
 
     const scrollDelta = (sessionData.totalScrollDistance || 0) - w.lastTotalScroll;
-    const videoDelta = (sessionData.videoClicks || 0) - w.lastVideoClicks;
+    const videoDelta  = (sessionData.videoClicks || 0) - w.lastVideoClicks;
     const shortsDelta = (sessionData.shortsClicks || 0) - w.lastShortsClicks;
 
-    w.lastTotalScroll = sessionData.totalScrollDistance || 0;
-    w.lastVideoClicks = sessionData.videoClicks || 0;
+    w.lastTotalScroll  = sessionData.totalScrollDistance || 0;
+    w.lastVideoClicks  = sessionData.videoClicks || 0;
     w.lastShortsClicks = sessionData.shortsClicks || 0;
 
     w.scrollDistance += Math.max(0, scrollDelta);
-    w.videoClicks += Math.max(0, videoDelta);
-    w.shortsClicks += Math.max(0, shortsDelta);
-    w.durationMs += rawDurationMs;
+    w.videoClicks    += Math.max(0, videoDelta);
+    w.shortsClicks   += Math.max(0, shortsDelta);
+    w.durationMs     += rawDurationMs;
 
     if (now - w.lastReset > 30 * 1000) {
       w.scrollDistance *= 0.7;
-      w.videoClicks *= 0.7;
-      w.shortsClicks *= 0.7;
-      w.durationMs *= 0.7;
+      w.videoClicks    *= 0.7;
+      w.shortsClicks   *= 0.7;
+      w.durationMs     *= 0.7;
       w.lastReset = now;
     }
   }
 
-  const rollingMinutes = w.durationMs / 1000 / 60;
-  const totalClicks = w.videoClicks + w.shortsClicks;
+  // Always record context for next call so we can detect transitions
+  w.lastContext = currentContext;
+
+  // ---- METRICS ----
+  const rollingMinutes  = w.durationMs / 1000 / 60;
+  const totalClicks     = w.videoClicks + w.shortsClicks;
   const scrollIntensity = rollingMinutes > 0 ? w.scrollDistance / rollingMinutes : 0;
-  const clickRate = rollingMinutes > 0 ? totalClicks / rollingMinutes : 0;
+  const clickRate       = rollingMinutes > 0 ? totalClicks / rollingMinutes : 0;
   const engagementScore = w.scrollDistance > 0 ? (totalClicks * 1000 / w.scrollDistance) : 0;
-  const mlFeatures = { scrollIntensity, engagementScore, durationMinutes: rollingMinutes };
-  const doomProb = predictDoomscrollProbability(mlFeatures);
+  const mlFeatures      = { scrollIntensity, engagementScore, durationMinutes: rollingMinutes };
+  const doomProb        = predictDoomscrollProbability(mlFeatures);
 
   let bayesDoom = false;
   if (doomProb < 0.65) {
-    const pScroll = scrollIntensity > 2000 ? 0.7 : 0.3;
-    const pDuration = rawMinutes > 20 ? 0.7 : 0.3;
-    const pEngagement = engagementScore < 0.5 ? 0.6 : 0.4;
+    const pScroll      = scrollIntensity > 2000 ? 0.7 : 0.3;
+    const pDuration    = rawMinutes > 20 ? 0.7 : 0.3;
+    const pEngagement  = engagementScore < 0.5 ? 0.6 : 0.4;
     bayesDoom = ((pScroll + pDuration + pEngagement) / 3) >= 0.6;
   }
 
@@ -347,24 +458,36 @@ function analyzeSession(sessionData) {
     lowEngagement:  engagementScore < 0.5,
     fastScrolling:  scrollIntensity > 2000,
     lowClickRate:   clickRate < 0.3 && rawMinutes > 7.5,
-    shortsOverload: sessionData.currentContext === 'shorts_feed' && w.shortsClicks > 18
+    shortsOverload: currentContext === 'shorts_feed' && w.shortsClicks > 18
   };
 
   const signalCount = Object.values(signals).filter(Boolean).length;
+
+  // ---- RULE-BASED with cooldown ----
+  // During earned cooldown, raise the signal threshold so returning to feed
+  // after genuine watch time doesn't immediately re-arm ruleBased
+  const inCooldown = now < w.cooldownUntil;
+  const cooldownSecondsLeft = inCooldown ? Math.round((w.cooldownUntil - now) / 1000) : 0;
+
+  // Thresholds: normal = 3 to arm / 2 to stay armed
+  //             cooldown = 5 to arm / 4 to stay armed
+  const armThreshold  = inCooldown ? 5 : 3;
+  const stayThreshold = inCooldown ? 4 : 2;
+
   const prevRuleState = sessionRuleStates[sessionData.sessionId] || false;
-  let ruleBased = prevRuleState ? signalCount >= 2 : signalCount >= 3;
-  if (sessionData.currentContext === 'watching_video') ruleBased = false;
+  let ruleBased = prevRuleState ? signalCount >= stayThreshold : signalCount >= armThreshold;
+  if (currentContext === 'watching_video') ruleBased = false;
   sessionRuleStates[sessionData.sessionId] = ruleBased;
 
-  const mlBased = doomProb >= 0.65;
-  const logicArray = [ruleBased, mlBased, bayesDoom];
-  const trueCount = logicArray.filter(Boolean).length;
+  const mlBased      = doomProb >= 0.65;
+  const logicArray   = [ruleBased, mlBased, bayesDoom];
+  const trueCount    = logicArray.filter(Boolean).length;
   const isDoomscrolling = trueCount >= 2;
 
-  // ---- ML PROBABILITY LOG ----
+  // ---- LOG ----
   console.log(
     `[Analysis] Session: ...${sessionData.sessionId.slice(-8)} | ` +
-    `Context: ${sessionData.currentContext} | ` +
+    `Context: ${currentContext} | ` +
     `Duration: ${formatDuration(rawDurationMs)} | ` +
     `ScrollDist: ${Math.round(w.scrollDistance)} | ` +
     `ScrollIntensity: ${scrollIntensity.toFixed(1)}/min | ` +
@@ -373,8 +496,10 @@ function analyzeSession(sessionData) {
   );
   console.log(
     `[Analysis] doomProb: ${doomProb.toFixed(3)} | ` +
-    `ruleBased: ${ruleBased} | mlBased: ${mlBased} | bayesDoom: ${bayesDoom} | ` +
-    `=> isDoomscrolling: ${isDoomscrolling} (${trueCount}/3)`
+    `ruleBased: ${ruleBased} (thresh: ${prevRuleState ? stayThreshold : armThreshold}) | ` +
+    `mlBased: ${mlBased} | bayesDoom: ${bayesDoom} | ` +
+    `=> isDoomscrolling: ${isDoomscrolling} (${trueCount}/3)` +
+    (inCooldown ? ` | COOLDOWN: ${cooldownSecondsLeft}s left` : '')
   );
   console.log(
     `[Signals]  longDuration: ${signals.longDuration} | ` +
@@ -386,7 +511,7 @@ function analyzeSession(sessionData) {
     `count: ${signalCount}/6`
   );
 
-  const canNudge = isDoomscrolling && sessionData.currentContext !== 'watching_video';
+  const canNudge = isDoomscrolling && currentContext !== 'watching_video';
   if (canNudge) triggerNudge(sessionData, signals, rawDurationMs);
 
   return isDoomscrolling;
