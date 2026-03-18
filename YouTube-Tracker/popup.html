@@ -8,28 +8,28 @@
       padding: 15px;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       margin: 0;
-      background: linear-gradient(135deg, #0F3443  0%, #34E89E 100%);
+      background: linear-gradient(135deg, #0F3443 0%, #34E89E 100%);
       color: white;
     }
-    
+
     .header {
       text-align: center;
       margin-bottom: 15px;
     }
-    
+
     .header h1 {
       font-size: 18px;
       margin: 0;
       font-weight: 600;
     }
-    
+
     .stats-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 10px;
       margin-bottom: 15px;
     }
-    
+
     .stat-card {
       background: rgba(255, 255, 255, 0.15);
       padding: 10px;
@@ -37,44 +37,44 @@
       text-align: center;
       backdrop-filter: blur(10px);
     }
-    
+
     .stat-number {
       font-size: 24px;
       font-weight: bold;
       display: block;
     }
-    
+
     .stat-label {
       font-size: 12px;
       opacity: 0.9;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    
+
     .recent-activity {
       background: rgba(255, 255, 255, 0.1);
       padding: 10px;
       border-radius: 8px;
       margin-bottom: 10px;
     }
-    
+
     .recent-activity h3 {
       margin: 0 0 8px 0;
       font-size: 14px;
       font-weight: 600;
     }
-    
+
     .activity-item {
       font-size: 12px;
       margin: 4px 0;
       opacity: 0.9;
     }
-    
+
     .controls {
       display: flex;
       gap: 8px;
     }
-    
+
     .btn {
       flex: 1;
       padding: 8px;
@@ -85,28 +85,28 @@
       font-weight: 600;
       text-transform: uppercase;
     }
-    
+
     .btn-primary {
       background: #4CAF50;
       color: white;
     }
-    
+
     .btn-secondary {
       background: rgba(255, 255, 255, 0.2);
       color: white;
     }
-    
+
     .btn:hover {
       opacity: 0.9;
       transform: translateY(-1px);
     }
-    
+
     .loading {
       text-align: center;
       font-style: italic;
       opacity: 0.7;
     }
-    
+
     .status-indicator {
       display: inline-block;
       width: 8px;
@@ -114,72 +114,295 @@
       border-radius: 50%;
       margin-right: 6px;
     }
-    
+
     .status-active {
       background: #4CAF50;
       animation: pulse 2s infinite;
     }
-    
+
     @keyframes pulse {
       0% { opacity: 1; }
       50% { opacity: 0.5; }
       100% { opacity: 1; }
     }
+
+    /* ---- INTERVAL SECTION ---- */
+    .interval-section {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 15px;
+    }
+
+    .interval-section .section-title {
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
+    .interval-radios {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .interval-radios label {
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .interval-slider-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    /* Locked state — greyed out controls */
+    .interval-section.locked .interval-radios label {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .interval-section.locked input[type="range"] {
+      opacity: 0.4;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    /* Lock status bar */
+    .lock-status {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .lock-status.visible {
+      display: flex;
+    }
+
+    .lock-icon {
+      font-size: 14px;
+    }
+
+    .lock-text {
+      flex: 1;
+    }
+
+    /* ---- ONBOARDING SCREEN ---- */
+    #onboarding {
+      display: none;
+    }
+
+    #onboarding.visible {
+      display: block;
+    }
+
+    #main-view {
+      display: block;
+    }
+
+    #main-view.hidden {
+      display: none;
+    }
+
+    .onboarding-card {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .onboarding-card h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 8px 0;
+    }
+
+    .onboarding-card p {
+      font-size: 12px;
+      opacity: 0.85;
+      margin: 0 0 16px 0;
+      line-height: 1.5;
+    }
+
+    .onboarding-options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .onboarding-option {
+      background: rgba(255, 255, 255, 0.15);
+      border: 2px solid transparent;
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s;
+      color: white;
+    }
+
+    .onboarding-option:hover {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    .onboarding-option.selected {
+      border-color: #4CAF50;
+      background: rgba(76, 175, 80, 0.25);
+    }
+
+    .onboarding-option .opt-label {
+      font-size: 15px;
+      display: block;
+    }
+
+    .onboarding-option .opt-desc {
+      font-size: 10px;
+      opacity: 0.8;
+      font-weight: 400;
+      display: block;
+      margin-top: 3px;
+    }
+
+    .onboarding-custom-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 13px;
+    }
+
+    .onboarding-custom-row input[type="range"] {
+      flex: 1;
+    }
+
+    #confirmInterval {
+      width: 100%;
+      padding: 10px;
+      background: #4CAF50;
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #confirmInterval:hover {
+      opacity: 0.9;
+    }
+
+    #confirmInterval:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>Scroll Tracker</h1>
-    <div id="status">
-      <span class="status-indicator status-active"></span>
-      <span>Tracking Active</span>
+
+  <!-- ONBOARDING SCREEN — shown only on first ever open -->
+  <div id="onboarding">
+    <div class="header">
+      <h1>Scroll Tracker</h1>
+    </div>
+    <div class="onboarding-card">
+      <h2>Set Your Check Frequency</h2>
+      <p>How often should the tracker analyze your browsing? You can change this between sessions.</p>
+      <div class="onboarding-options">
+        <button class="onboarding-option" data-value="5">
+          <span class="opt-label">5 min</span>
+          <span class="opt-desc">Recommended</span>
+        </button>
+        <button class="onboarding-option" data-value="10">
+          <span class="opt-label">10 min</span>
+          <span class="opt-desc">Moderate</span>
+        </button>
+        <button class="onboarding-option" data-value="20">
+          <span class="opt-label">20 min</span>
+          <span class="opt-desc">Infrequent</span>
+        </button>
+        <button class="onboarding-option" data-value="custom">
+          <span class="opt-label">Custom</span>
+          <span class="opt-desc">5–25 min</span>
+        </button>
+      </div>
+      <div class="onboarding-custom-row" id="onboardingSliderRow" style="display:none;">
+        <input type="range" id="onboardingSlider" min="5" max="25" value="5">
+        <span id="onboardingSliderValue">5</span> min
+      </div>
+      <button id="confirmInterval" disabled>Confirm</button>
     </div>
   </div>
 
-  <div class="stats-grid">
-    <div class="stat-card">
-      <span class="stat-number" id="totalTime">-</span>
-      <span class="stat-label">Total Minutes</span>
+  <!-- MAIN VIEW — shown after onboarding is complete -->
+  <div id="main-view">
+    <div class="header">
+      <h1>Scroll Tracker</h1>
+      <div id="status">
+        <span class="status-indicator status-active"></span>
+        <span>Tracking Active</span>
+      </div>
     </div>
-    <div class="stat-card">
-      <span class="stat-number" id="totalSessions">-</span>
-      <span class="stat-label">YouTube Opens</span>
-    </div>
-    <div class="stat-card">
-      <span class="stat-number" id="avgDuration">-</span>
-      <span class="stat-label">Avg Duration</span>
-    </div>
-    <div class="stat-card">
-      <span class="stat-number" id="videoClicks">-</span>
-      <span class="stat-label">Videos Clicked</span>
-    </div>
-  </div>
 
-  <!-- Check Frequency / Slider Section -->
-  <div class="controls" style="flex-direction: column; gap: 10px; margin-bottom: 15px;">
-    <div style="font-weight: 600; font-size: 13px;">Update Frequency</div>
-    <div>
-      <label><input type="radio" name="mlInterval" value="5"> 5 min</label>
-      <label><input type="radio" name="mlInterval" value="10"> 10 min</label>
-      <label><input type="radio" name="mlInterval" value="20"> 20 min</label>
-      <label><input type="radio" name="mlInterval" value="custom"> Custom</label>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-number" id="totalTime">-</span>
+        <span class="stat-label">Total Minutes</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="totalSessions">-</span>
+        <span class="stat-label">YouTube Opens</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="avgDuration">-</span>
+        <span class="stat-label">Avg Duration</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="videoClicks">-</span>
+        <span class="stat-label">Videos Clicked</span>
+      </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 6px;">
-      <input type="range" id="customSlider" min="5" max="30" value="5" disabled>
-      <span id="customValue">5</span> min
-    </div>
-  </div>
 
-  <div class="recent-activity">
-    <h3>Recent Activity</h3>
-    <div id="recentList">
-      <div class="loading">Loading data...</div>
+    <!-- Interval section -->
+    <div class="interval-section" id="intervalSection">
+      <div class="section-title">Check Frequency</div>
+      <div class="interval-radios">
+        <label><input type="radio" name="mlInterval" value="5"> 5 min</label>
+        <label><input type="radio" name="mlInterval" value="10"> 10 min</label>
+        <label><input type="radio" name="mlInterval" value="20"> 20 min</label>
+        <label><input type="radio" name="mlInterval" value="custom"> Custom</label>
+      </div>
+      <div class="interval-slider-row">
+        <input type="range" id="customSlider" min="5" max="25" value="5" disabled>
+        <span id="customValue">5</span> min
+      </div>
+      <!-- Lock status bar — hidden until interval is locked -->
+      <div class="lock-status" id="lockStatus">
+        <span class="lock-icon">🔒</span>
+        <span class="lock-text" id="lockText">Active: 5 min — locked during session</span>
+      </div>
     </div>
-  </div>
 
-  <div class="controls">
-    <button class="btn btn-secondary" id="clearData">Clear Data</button>
-    <button class="btn btn-primary" id="exportData">Export CSV</button>
+    <div class="recent-activity">
+      <h3>Recent Activity</h3>
+      <div id="recentList">
+        <div class="loading">Loading data...</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-secondary" id="clearData">Clear Data</button>
+      <button class="btn btn-primary" id="exportData">Export CSV</button>
+    </div>
   </div>
 
   <script src="popup.js"></script>
