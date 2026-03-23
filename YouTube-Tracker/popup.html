@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <style>
+    * { box-sizing: border-box; }
+
     body {
-      width: 300px;
+      width: 360px;
       padding: 15px;
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       margin: 0;
@@ -14,97 +16,13 @@
 
     .header {
       text-align: center;
-      margin-bottom: 15px;
+      margin-bottom: 12px;
     }
 
     .header h1 {
       font-size: 18px;
-      margin: 0;
+      margin: 0 0 4px 0;
       font-weight: 600;
-    }
-
-    .stats-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-bottom: 15px;
-    }
-
-    .stat-card {
-      background: rgba(255, 255, 255, 0.15);
-      padding: 10px;
-      border-radius: 8px;
-      text-align: center;
-      backdrop-filter: blur(10px);
-    }
-
-    .stat-number {
-      font-size: 24px;
-      font-weight: bold;
-      display: block;
-    }
-
-    .stat-label {
-      font-size: 12px;
-      opacity: 0.9;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .recent-activity {
-      background: rgba(255, 255, 255, 0.1);
-      padding: 10px;
-      border-radius: 8px;
-      margin-bottom: 10px;
-    }
-
-    .recent-activity h3 {
-      margin: 0 0 8px 0;
-      font-size: 14px;
-      font-weight: 600;
-    }
-
-    .activity-item {
-      font-size: 12px;
-      margin: 4px 0;
-      opacity: 0.9;
-    }
-
-    .controls {
-      display: flex;
-      gap: 8px;
-    }
-
-    .btn {
-      flex: 1;
-      padding: 8px;
-      border: none;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    .btn-primary {
-      background: #4CAF50;
-      color: white;
-    }
-
-    .btn-secondary {
-      background: rgba(255, 255, 255, 0.2);
-      color: white;
-    }
-
-    .btn:hover {
-      opacity: 0.9;
-      transform: translateY(-1px);
-    }
-
-    .loading {
-      text-align: center;
-      font-style: italic;
-      opacity: 0.7;
     }
 
     .status-indicator {
@@ -126,15 +44,116 @@
       100% { opacity: 1; }
     }
 
-    /* ---- INTERVAL SECTION ---- */
-    .interval-section {
-      background: rgba(255, 255, 255, 0.1);
+    /* ---- VIEW TOGGLE (Stats / Chart) ---- */
+    .view-toggle {
+      display: flex;
+      background: rgba(255,255,255,0.1);
       border-radius: 8px;
-      padding: 10px;
-      margin-bottom: 15px;
+      padding: 3px;
+      margin-bottom: 12px;
+      gap: 3px;
     }
 
-    .interval-section .section-title {
+    .view-toggle-btn {
+      flex: 1;
+      padding: 6px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: transparent;
+      color: rgba(255,255,255,0.6);
+      transition: all 0.2s;
+    }
+
+    .view-toggle-btn.active {
+      background: rgba(255,255,255,0.25);
+      color: white;
+    }
+
+    /* ---- STATS VIEW ---- */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .stat-card {
+      background: rgba(255,255,255,0.15);
+      padding: 10px;
+      border-radius: 8px;
+      text-align: center;
+      backdrop-filter: blur(10px);
+    }
+
+    .stat-number {
+      font-size: 24px;
+      font-weight: bold;
+      display: block;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      opacity: 0.9;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* ---- CHART VIEW ---- */
+    #chartView {
+      display: none;
+      margin-bottom: 12px;
+    }
+
+    #chartView.visible {
+      display: block;
+    }
+
+    .chart-container {
+      background: rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .chart-title {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      opacity: 0.9;
+    }
+
+    .chart-legend {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    /* ---- INTERVAL SECTION ---- */
+    .interval-section {
+      background: rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 12px;
+    }
+
+    .section-title {
       font-weight: 600;
       font-size: 13px;
       margin-bottom: 8px;
@@ -159,7 +178,6 @@
       font-size: 13px;
     }
 
-    /* Locked state — greyed out controls */
     .interval-section.locked .interval-radios label {
       opacity: 0.4;
       cursor: not-allowed;
@@ -171,49 +189,177 @@
       pointer-events: none;
     }
 
-    /* Lock status bar */
     .lock-status {
       display: none;
       align-items: center;
       gap: 6px;
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255,255,255,0.15);
       border-radius: 6px;
       padding: 6px 10px;
       font-size: 12px;
       margin-top: 8px;
     }
 
-    .lock-status.visible {
-      display: flex;
+    .lock-status.visible { display: flex; }
+    .lock-icon { font-size: 14px; }
+    .lock-text { flex: 1; }
+
+    /* ---- SESSION HISTORY ---- */
+    .recent-activity {
+      background: rgba(255,255,255,0.1);
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 10px;
     }
 
-    .lock-icon {
+    .recent-activity h3 {
+      margin: 0 0 8px 0;
       font-size: 14px;
+      font-weight: 600;
     }
 
-    .lock-text {
+    .activity-item {
+      border-radius: 6px;
+      margin-bottom: 6px;
+      background: rgba(255,255,255,0.07);
+      overflow: hidden;
+    }
+
+    .activity-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .activity-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .activity-summary:hover {
+      background: rgba(255,255,255,0.05);
+    }
+
+    .activity-main {
+      opacity: 0.9;
+    }
+
+    .activity-chevron {
+      font-size: 10px;
+      opacity: 0.6;
+      transition: transform 0.2s;
+      flex-shrink: 0;
+      margin-left: 8px;
+    }
+
+    .activity-chevron.open {
+      transform: rotate(180deg);
+    }
+
+    .activity-detail {
+      display: none;
+      padding: 0 10px 10px 10px;
+      font-size: 11px;
+      opacity: 0.85;
+    }
+
+    .activity-detail.visible {
+      display: block;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .detail-item {
+      background: rgba(255,255,255,0.08);
+      border-radius: 5px;
+      padding: 6px 8px;
+    }
+
+    .detail-label {
+      font-size: 10px;
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 2px;
+    }
+
+    .detail-value {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .detail-bar-row {
+      margin-top: 8px;
+    }
+
+    .detail-bar-label {
+      font-size: 10px;
+      opacity: 0.7;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 4px;
+    }
+
+    .detail-bar {
+      display: flex;
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.1);
+    }
+
+    .detail-bar-segment {
+      height: 100%;
+      transition: width 0.3s;
+    }
+
+    .intensity-low  { color: #4CAF50; }
+    .intensity-med  { color: #FFC107; }
+    .intensity-high { color: #f44336; }
+
+    .loading {
+      text-align: center;
+      font-style: italic;
+      opacity: 0.7;
+      font-size: 12px;
+      padding: 8px 0;
+    }
+
+    /* ---- CONTROLS ---- */
+    .controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
       flex: 1;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 600;
+      text-transform: uppercase;
     }
 
-    /* ---- ONBOARDING SCREEN ---- */
-    #onboarding {
-      display: none;
-    }
+    .btn-primary  { background: #4CAF50; color: white; }
+    .btn-secondary { background: rgba(255,255,255,0.2); color: white; }
+    .btn:hover { opacity: 0.9; transform: translateY(-1px); }
 
-    #onboarding.visible {
-      display: block;
-    }
-
-    #main-view {
-      display: block;
-    }
-
-    #main-view.hidden {
-      display: none;
-    }
+    /* ---- ONBOARDING ---- */
+    #onboarding { display: none; }
+    #onboarding.visible { display: block; }
+    #main-view.hidden { display: none; }
 
     .onboarding-card {
-      background: rgba(255, 255, 255, 0.12);
+      background: rgba(255,255,255,0.12);
       border-radius: 10px;
       padding: 20px;
       text-align: center;
@@ -240,7 +386,7 @@
     }
 
     .onboarding-option {
-      background: rgba(255, 255, 255, 0.15);
+      background: rgba(255,255,255,0.15);
       border: 2px solid transparent;
       border-radius: 8px;
       padding: 10px;
@@ -251,13 +397,11 @@
       color: white;
     }
 
-    .onboarding-option:hover {
-      background: rgba(255, 255, 255, 0.25);
-    }
+    .onboarding-option:hover { background: rgba(255,255,255,0.25); }
 
     .onboarding-option.selected {
       border-color: #4CAF50;
-      background: rgba(76, 175, 80, 0.25);
+      background: rgba(76,175,80,0.25);
     }
 
     .onboarding-option .opt-label {
@@ -281,9 +425,7 @@
       font-size: 13px;
     }
 
-    .onboarding-custom-row input[type="range"] {
-      flex: 1;
-    }
+    .onboarding-custom-row input[type="range"] { flex: 1; }
 
     #confirmInterval {
       width: 100%;
@@ -297,23 +439,15 @@
       cursor: pointer;
     }
 
-    #confirmInterval:hover {
-      opacity: 0.9;
-    }
-
-    #confirmInterval:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
+    #confirmInterval:hover { opacity: 0.9; }
+    #confirmInterval:disabled { opacity: 0.4; cursor: not-allowed; }
   </style>
 </head>
 <body>
 
-  <!-- ONBOARDING SCREEN — shown only on first ever open -->
+  <!-- ONBOARDING -->
   <div id="onboarding">
-    <div class="header">
-      <h1>Scroll Tracker</h1>
-    </div>
+    <div class="header"><h1>Scroll Tracker</h1></div>
     <div class="onboarding-card">
       <h2>Set Your Check Frequency</h2>
       <p>How often should the tracker analyze your browsing? You can change this between sessions.</p>
@@ -343,7 +477,7 @@
     </div>
   </div>
 
-  <!-- MAIN VIEW — shown after onboarding is complete -->
+  <!-- MAIN VIEW -->
   <div id="main-view">
     <div class="header">
       <h1>Scroll Tracker</h1>
@@ -353,22 +487,53 @@
       </div>
     </div>
 
-    <div class="stats-grid">
-      <div class="stat-card">
-        <span class="stat-number" id="totalTime">-</span>
-        <span class="stat-label">Total Minutes</span>
+    <!-- Stats / Chart toggle -->
+    <div class="view-toggle">
+      <button class="view-toggle-btn active" id="btnStats">Stats</button>
+      <button class="view-toggle-btn" id="btnChart">Chart</button>
+    </div>
+
+    <!-- Stats view -->
+    <div id="statsView">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-number" id="totalTime">-</span>
+          <span class="stat-label">Total Minutes</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-number" id="totalSessions">-</span>
+          <span class="stat-label">YouTube Opens</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-number" id="avgDuration">-</span>
+          <span class="stat-label">Avg Duration</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-number" id="videoClicks">-</span>
+          <span class="stat-label">Videos Clicked</span>
+        </div>
       </div>
-      <div class="stat-card">
-        <span class="stat-number" id="totalSessions">-</span>
-        <span class="stat-label">YouTube Opens</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-number" id="avgDuration">-</span>
-        <span class="stat-label">Avg Duration</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-number" id="videoClicks">-</span>
-        <span class="stat-label">Videos Clicked</span>
+    </div>
+
+    <!-- Chart view -->
+    <div id="chartView">
+      <div class="chart-container">
+        <div class="chart-title">Activity Breakdown — Last 5 Sessions</div>
+        <svg id="activityChart" width="330" height="140"></svg>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#667eea;"></div>
+            <span>Scrolling</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#764ba2;"></div>
+            <span>Watching</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#34E89E;"></div>
+            <span>Shorts</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -385,15 +550,15 @@
         <input type="range" id="customSlider" min="5" max="25" value="5" disabled>
         <span id="customValue">5</span> min
       </div>
-      <!-- Lock status bar — hidden until interval is locked -->
       <div class="lock-status" id="lockStatus">
         <span class="lock-icon">🔒</span>
         <span class="lock-text" id="lockText">Active: 5 min — locked during session</span>
       </div>
     </div>
 
+    <!-- Session history -->
     <div class="recent-activity">
-      <h3>Recent Activity</h3>
+      <h3>Session History</h3>
       <div id="recentList">
         <div class="loading">Loading data...</div>
       </div>
