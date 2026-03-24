@@ -1,9 +1,4 @@
-// Version 1.7.2
-/* Notes guide: 
-   Normal comments are general explanations of what the code is doing.
-   Capailized comments like --- THIS --- are specific notes for code reviewers, highlighting important logic or decisions that may not be obvious.
-*/
-
+// Version 1.7.0
 console.log('Background script loaded and ready');
 
 let nudgeLevel = 0;
@@ -72,16 +67,19 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
         '(paused', Math.round((now - pausedSession.pauseTimestamp) / 1000) + 's ago)',
         snapshot ? '— snapshot scrollDist: ' + (snapshot.totalScrollDistance || 0) : '— no snapshot');
       pausedSession = null; // consumed
+
+      // Check if user had a 'closed' nudge outcome — if so update to closed_then_returned
+      checkAndUpdateClosedOutcome(sessionId);
     } else {
       sessionId = 'session_' + now + '_' + Math.random().toString(36).substr(2, 9);
       sessionRuleStates[sessionId] = false;
       delete mlWindowState[sessionId];
-      // Genuinely new session — clear lock and confirmation so picker shows again
-      // Resume sessions do NOT clear this — same session, same confirmed interval
+      // Genuinely new session — clear lock, confirmation, and any active level 3 resistance
       browser.storage.local.set({
         intervalLocked: false,
         intervalConfirmedForSession: null
       });
+      browser.storage.local.remove('activeScrollResistance');
       lockedSessionId = null;
       console.log('New session created for tab', tabId, ':', sessionId);
     }
@@ -185,13 +183,47 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Popup calls this to know which session is currently active
-  // Used to decide whether to show the interval picker or not
   if (message.action === 'getCurrentSessionId') {
-    // Find any active YouTube tab's session ID
     const activeTabId = Object.keys(tabSessions)[0];
     const sessionId = activeTabId ? tabSessions[activeTabId] : null;
     sendResponse({ sessionId });
     return false;
+  }
+
+  // Content script notifies when resistance period naturally expires
+  if (message.action === 'resistanceExpired') {
+    clearScrollResistance();
+    sendResponse({ success: true });
+    return false;
+  }
+
+  // Content script refreshed during resistance — reset firedAt so next refresh
+  // also gets the full 30s, removing any incentive to keep refreshing
+  if (message.action === 'resetScrollResistance') {
+    browser.storage.local.get(['activeScrollResistance']).then(result => {
+      if (result.activeScrollResistance) {
+        const updated = { ...result.activeScrollResistance, firedAt: Date.now() };
+        browser.storage.local.set({ activeScrollResistance: updated });
+        console.log('[Level3] Resistance firedAt reset to now — refresh detected');
+      }
+    });
+    sendResponse({ success: true });
+    return false;
+  }
+
+  // Save a nudge outcome record
+  if (message.action === 'saveNudgeOutcome') {
+    saveNudgeOutcome(message.data);
+    sendResponse({ success: true });
+    return false;
+  }
+
+  // Return all nudge outcome records
+  if (message.action === 'getNudgeOutcomes') {
+    browser.storage.local.get(['nudgeOutcomes']).then(result => {
+      sendResponse({ data: result.nudgeOutcomes || [] });
+    });
+    return true;
   }
 
   // Content script calls this when user clicks a suggestion button
@@ -255,6 +287,46 @@ browser.tabs.onRemoved.addListener(async (tabId) => {
     console.log('All YouTube tabs closed');
   }
 });
+
+// Save nudge outcome record
+// If a recent outcome for this session was 'closed', update it to 'closed_then_returned'
+async function saveNudgeOutcome(outcomeData) {
+  try {
+    const result = await browser.storage.local.get(['nudgeOutcomes']);
+    const outcomes = result.nudgeOutcomes || [];
+
+    outcomes.push({ ...outcomeData, savedAt: Date.now() });
+
+    await browser.storage.local.set({ nudgeOutcomes: outcomes.slice(-200) });
+    console.log('[NudgeOutcome] Saved:', outcomeData.outcome, 'for', outcomeData.chosenSuggestion);
+  } catch (error) {
+    console.error('[NudgeOutcome] Error saving outcome:', error);
+  }
+}
+
+// When a session resumes, check if its most recent nudge outcome was 'closed'
+// If so, update it to 'closed_then_returned' since the user came back within 10 minutes
+async function checkAndUpdateClosedOutcome(sessionId) {
+  try {
+    const result = await browser.storage.local.get(['nudgeOutcomes']);
+    const outcomes = result.nudgeOutcomes || [];
+
+    // Find the most recent 'closed' outcome for this session
+    const idx = outcomes.map((o, i) => ({ o, i }))
+      .reverse()
+      .find(({ o }) => o.sessionId === sessionId && o.outcome === 'closed');
+
+    if (idx) {
+      outcomes[idx.i].outcome = 'closed_then_returned';
+      outcomes[idx.i].finalOutcome = 'closed_then_returned';
+      outcomes[idx.i].returnedAt = Date.now();
+      await browser.storage.local.set({ nudgeOutcomes: outcomes });
+      console.log('[NudgeOutcome] Updated to closed_then_returned for session', sessionId.slice(-8));
+    }
+  } catch (error) {
+    console.error('[NudgeOutcome] Error updating closed outcome:', error);
+  }
+}
 
 // Save session data to storage
 async function saveSessionData(sessionData) {
@@ -588,9 +660,29 @@ async function showSuggestionNudge(sessionData, signals, durationMs) {
   sendToAllYouTubeTabs({ action: 'showSuggestionPrompt', suggestions, duration: durationMs, nudgeType });
 }
 
-function activateScrollResistance(sessionData, durationMs) {
+const RESISTANCE_DURATION_S = 30; // fixed 30 second resistance period
+
+async function activateScrollResistance(sessionData, durationMs) {
   console.log('LEVEL 3 TRIGGERED', formatDuration(durationMs));
-  sendToActiveTab({ action: 'activateScrollResistance', duration: durationMs, context: sessionData.currentContext });
+
+  const resistanceData = {
+    sessionId:  sessionData.sessionId,
+    context:    sessionData.currentContext,
+    firedAt:    Date.now(),
+    durationS:  RESISTANCE_DURATION_S
+  };
+
+  // Persist so reopened tabs within 10 min get resistance restored
+  await browser.storage.local.set({ activeScrollResistance: resistanceData });
+  console.log('[Level3] Scroll resistance saved to storage for session', sessionData.sessionId.slice(-8));
+
+  sendToAllYouTubeTabs({ action: 'activateScrollResistance', duration: RESISTANCE_DURATION_S, context: sessionData.currentContext });
+}
+
+// Called by content script when resistance period naturally expires
+async function clearScrollResistance() {
+  await browser.storage.local.remove('activeScrollResistance');
+  console.log('[Level3] Scroll resistance cleared from storage');
 }
 
 function sendToActiveTab(message) {
@@ -637,9 +729,13 @@ window.testNudge = (level = 1) => {
     default: durationMs = 5 * 60 * 1000; nudgeCount = 0;
   }
 
+  // Use real active session ID so level 3 resistance restores correctly on refresh
+  const activeTabId = Object.keys(tabSessions)[0];
+  const realSessionId = activeTabId ? tabSessions[activeTabId] : 'test-session';
+
   const fakeSession = {
-    sessionId: 'test-session',
-    currentContext: 'normal',
+    sessionId: realSessionId,
+    currentContext: 'homepage',
     totalScrollDistance: 10000,
     totalClicks: 2,
     videoClicks: 2,
@@ -657,6 +753,6 @@ window.testNudge = (level = 1) => {
   };
 
   triggerNudge(fakeSession, fakeSignals, durationMs);
-  console.log(`Test nudge triggered for level ${level} with duration ${formatDuration(durationMs)}`);
+  console.log(`Test nudge triggered for level ${level} with duration ${formatDuration(durationMs)} using session ${realSessionId.slice(-8)}`);
   nudgeCount = nudgeCountBackup;
 };
