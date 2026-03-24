@@ -68,6 +68,31 @@ browser.runtime.sendMessage({ action: 'requestSessionId' })
 
     contentReady = true;
     console.log('Content script ready for nudges');
+
+    // Check if level 3 scroll resistance was active when this session's tab last closed
+    // Must be inside .then() so scrollData.sessionId is guaranteed to be set
+    browser.storage.local.get(['activeScrollResistance']).then(result => {
+      const r = result.activeScrollResistance;
+      if (!r) return;
+
+      if (r.sessionId !== scrollData.sessionId) return;
+
+      const elapsed   = (Date.now() - r.firedAt) / 1000;
+      const remaining = r.durationS - elapsed;
+
+      if (remaining > 2) {
+        // Refresh or reopen within resistance window — reset to full 30s
+        // This removes the incentive to refresh to escape resistance
+        console.log('[Level3] Resistance active on load, resetting to full 30s');
+        // Update firedAt in storage so the next refresh also gets full 30s
+        browser.runtime.sendMessage({ action: 'resetScrollResistance' }).catch(() => {});
+        setTimeout(() => activateScrollResistance(30, r.context), 800);
+      } else {
+        browser.runtime.sendMessage({ action: 'resistanceExpired' }).catch(() => {});
+        console.log('[Level3] Resistance expired while tab was closed, clearing');
+      }
+    }).catch(err => console.warn('Could not check activeScrollResistance on load:', err));
+
   })
   .catch(err => {
     scrollData.sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -386,10 +411,11 @@ browser.storage.local.get(['activeNudge']).then(result => {
   if (result.activeNudge) {
     console.log('[Nudge] Persistent nudge found on load, showing prompt');
     const { suggestions, duration, nudgeType } = result.activeNudge;
-    // Small delay so the page DOM is ready
     setTimeout(() => showSuggestionPrompt(suggestions, duration, nudgeType), 800);
   }
 }).catch(err => console.warn('Could not check activeNudge on load:', err));
+
+
 
 // NUDGE LEVEL 1: AWARENESS BANNER
 function showAwarenessBanner(message, nudgeType) {
@@ -517,26 +543,118 @@ function showSuggestionPrompt(suggestions, duration, nudgeType) {
   prompt.querySelectorAll('.suggestion-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const chosen = suggestions[parseInt(btn.dataset.index)];
+
+      // Capture session state at nudge time for outcome tracking
+      updateContext();
+      const elapsedThisLoad = Date.now() - scrollData.startTime;
+      const nudgeSnapshot = {
+        sessionId:        scrollData.sessionId,
+        nudgeType:        nudgeType,
+        chosenSuggestion: chosen,
+        contextAtNudge:   scrollData.currentContext,
+        scrollDistAtNudge: scrollData.totalScrollDistance,
+        durationAtNudge:  scrollData.resumeOffset + elapsedThisLoad,
+        timestamp:        Date.now()
+      };
+
       // Clear from storage first, then execute the action
       browser.runtime.sendMessage({ action: 'clearActiveNudge' }).then(() => {
         prompt.remove();
-        handleSuggestionClick(chosen);
+        handleSuggestionClick(chosen, nudgeSnapshot);
       }).catch(() => {
         prompt.remove();
-        handleSuggestionClick(chosen);
+        handleSuggestionClick(chosen, nudgeSnapshot);
       });
     });
   });
 }
 
 function closeThisTab() {
-  // window.close() only works on script-opened tabs in Firefox
-  // So we ask the background to close it via browser.tabs.remove
   browser.runtime.sendMessage({ action: 'closeTab' }).catch(() => {});
 }
 
-function handleSuggestionClick(suggestion) {
+// Determine if this suggestion is a close-type action
+function isCloseAction(suggestion) {
+  return suggestion.includes('5-minute break') ||
+         suggestion.includes('Close YouTube for now') ||
+         suggestion.includes('Take a short break');
+}
+
+// Determine if this suggestion needs a follow-up check
+function needsFollowUp(suggestion) {
+  return suggestion.includes('Watch a full video instead') ||
+         suggestion.includes('subscriptions') ||
+         suggestion.includes('Watch Later') ||
+         suggestion.includes('Find something specific');
+}
+
+// Schedule a follow-up outcome check 2 minutes after the nudge choice
+// Checks what the user is actually doing and records the outcome
+function scheduleFollowUp(nudgeSnapshot) {
+  const scrollDistAtNudge = nudgeSnapshot.scrollDistAtNudge;
+  const suggestion = nudgeSnapshot.chosenSuggestion;
+
+  setTimeout(() => {
+    updateContext();
+    const currentContext = scrollData.currentContext;
+    const currentScrollDist = scrollData.totalScrollDistance;
+    const scrollDelta = currentScrollDist - scrollDistAtNudge;
+
+    let outcome = 'unknown';
+
+    if (currentContext === 'watching_video') {
+      // Actually watching a video — positive outcome
+      outcome = 'followed_through';
+    } else if (
+      (suggestion.includes('subscriptions') && currentContext === 'subscriptions') ||
+      (suggestion.includes('Watch Later') && window.location.href.includes('playlist?list=WL'))
+    ) {
+      // Still on the suggested page but hasn't picked a video yet — neutral
+      outcome = suggestion.includes('subscriptions')
+        ? 'browsing_subscriptions'
+        : 'browsing_watch_later';
+    } else if (
+      currentContext === 'homepage' ||
+      currentContext === 'shorts_feed' ||
+      scrollDelta > 2000
+    ) {
+      // Back to scrolling — negative outcome
+      outcome = 'returned_to_feed';
+    } else if (currentContext === 'search_results') {
+      outcome = 'search';
+    } else {
+      outcome = 'continued_browsing';
+    }
+
+    console.log('[NudgeOutcome] Follow-up outcome:', outcome, 'for suggestion:', suggestion);
+
+    browser.runtime.sendMessage({
+      action: 'saveNudgeOutcome',
+      data: { ...nudgeSnapshot, outcome, finalOutcome: outcome, followUpTimestamp: Date.now() }
+    }).catch(err => console.warn('[NudgeOutcome] Could not save outcome:', err));
+
+  }, 2 * 60 * 1000); // 2 minutes
+}
+
+function handleSuggestionClick(suggestion, nudgeSnapshot) {
   console.log('User selected suggestion:', suggestion);
+
+  if (isCloseAction(suggestion)) {
+    // Record outcome immediately as closed — no follow-up needed
+    browser.runtime.sendMessage({
+      action: 'saveNudgeOutcome',
+      data: { ...nudgeSnapshot, outcome: 'closed', finalOutcome: 'closed', followUpTimestamp: Date.now() }
+    }).catch(err => console.warn('[NudgeOutcome] Could not save close outcome:', err));
+  } else if (suggestion.includes('Search for something specific')) {
+    // Search — record as search, no follow-up evaluation
+    browser.runtime.sendMessage({
+      action: 'saveNudgeOutcome',
+      data: { ...nudgeSnapshot, outcome: 'search', finalOutcome: 'search', followUpTimestamp: Date.now() }
+    }).catch(err => console.warn('[NudgeOutcome] Could not save search outcome:', err));
+  } else if (needsFollowUp(suggestion)) {
+    // Schedule follow-up check — SPA navigation keeps content script alive
+    scheduleFollowUp(nudgeSnapshot);
+  }
 
   // Shorts feed choices
   if (suggestion.includes('Watch a full video instead')) {
@@ -581,12 +699,13 @@ let scrollResistanceActive = false;
 let scrollAccumulator = 0;
 const SCROLL_THRESHOLD = 100;
 
-function activateScrollResistance(duration, context) {
+function activateScrollResistance(durationSeconds, context) {
   if (scrollResistanceActive) return;
   scrollResistanceActive = true;
-  console.log('SCROLL RESISTANCE ACTIVATED');
+  scrollAccumulator = 0;
+  console.log('SCROLL RESISTANCE ACTIVATED for', durationSeconds, 'seconds');
 
-  showScrollResistanceOverlay(duration, context);
+  showScrollResistanceOverlay(durationSeconds, context);
   window.addEventListener('wheel', resistScroll, { passive: false });
   window.addEventListener('touchmove', resistScrollTouch, { passive: false });
 
@@ -596,7 +715,9 @@ function activateScrollResistance(duration, context) {
     window.removeEventListener('wheel', resistScroll);
     window.removeEventListener('touchmove', resistScrollTouch);
     console.log('SCROLL RESISTANCE DEACTIVATED');
-  }, duration * 1000);
+    // Notify background so it clears storage — resistance period is over naturally
+    browser.runtime.sendMessage({ action: 'resistanceExpired' }).catch(() => {});
+  }, durationSeconds * 1000);
 }
 
 function resistScroll(e) {
