@@ -144,16 +144,22 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (now >= nextTime) {
-      const analysisResult = analyzeSession(message.data);
-      // Only advance the timer if analysis ran past grace period
-      if (analysisResult !== null) {
-        nextAllowedAnalyze[sessionId] = now + mlCalculationInterval * 60 * 1000;
-      }
+      // Load personal thresholds async before analysis
+      // analyzeSession is synchronous so we pass thresholds in as a parameter
+      browser.storage.local.get(['personalThresholds']).then(result => {
+        const personalThresholds = result.personalThresholds || null;
+        const analysisResult = analyzeSession(message.data, personalThresholds);
+        if (analysisResult !== null) {
+          nextAllowedAnalyze[sessionId] = now + mlCalculationInterval * 60 * 1000;
+        }
+      });
     } else {
       // analysis on cooldown — state already logged above
     }
 
     saveSessionData(message.data);
+    // Update viable sessions and recalculate personal thresholds after saving
+    updateViableSessions(message.data);
     sendResponse({ success: true, saved: true });
     return false;
   }
@@ -288,6 +294,99 @@ browser.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
+// ---- PERSONALIZATION SYSTEM ----
+
+// Check if a session is viable for baseline calculation
+// Viable = represents real browsing behavior worth learning from
+function isViableSession(sessionData) {
+  const durationMin    = (sessionData.sessionDuration || 0) / 1000 / 60;
+  const scrollDist     = sessionData.totalScrollDistance || 0;
+  const totalClicks    = sessionData.totalClicks || 0;
+  const watchMs        = sessionData.timeWatchingVideo || 0;
+  const shortsMs       = sessionData.timeInShorts || 0;
+  const feedTimeMs     = Math.max(0, (sessionData.sessionDuration || 0) - watchMs - shortsMs);
+  const feedTimeSec    = feedTimeMs / 1000;
+
+  const meetsThresholds =
+    durationMin >= 3 &&        // at least 3 minutes total
+    scrollDist >= 2000 &&      // at least 2000px scrolled
+    totalClicks >= 1 &&        // at least one video/shorts click
+    feedTimeSec >= 60;         // at least 60 seconds in feed/homepage context
+
+  return meetsThresholds;
+}
+
+// Calculate median of an array
+function median(arr) {
+  if (!arr.length) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid    = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Calculate personal thresholds from viable sessions
+// Uses median * 1.5 as threshold — robust to outliers
+function calculatePersonalThresholds(viableSessions) {
+  const scrollDistances = viableSessions.map(s => s.scrollDistance);
+  const intensities     = viableSessions.map(s => s.scrollIntensity);
+
+  const medianScrollDist  = median(scrollDistances);
+  const medianIntensity   = median(intensities);
+
+  return {
+    highScrolling:  medianScrollDist * 1.5,
+    fastScrolling:  medianIntensity  * 1.5,
+    sessionCount:   viableSessions.length,
+    lastUpdated:    Date.now()
+  };
+}
+
+// Append viable session to rolling window (capped at 7)
+// Recalculates personal thresholds after each new viable session
+async function updateViableSessions(sessionData) {
+  if (!isViableSession(sessionData)) {
+    console.log('[Personal] Session not viable for baseline — skipping');
+    return;
+  }
+
+  try {
+    const result         = await browser.storage.local.get(['viableSessions']);
+    const existing       = result.viableSessions || [];
+    const durationMin    = sessionData.sessionDuration / 1000 / 60;
+    const scrollIntensity = durationMin > 0
+      ? sessionData.totalScrollDistance / durationMin
+      : 0;
+
+    const newEntry = {
+      scrollDistance:  sessionData.totalScrollDistance,
+      scrollIntensity: scrollIntensity,
+      durationMs:      sessionData.sessionDuration,
+      timestamp:       Date.now()
+    };
+
+    // Keep last 7 viable sessions
+    const updated = [...existing, newEntry].slice(-7);
+    await browser.storage.local.set({ viableSessions: updated });
+
+    // Recalculate thresholds if 5+ viable sessions exist
+    if (updated.length >= 5) {
+      const thresholds = calculatePersonalThresholds(updated);
+      await browser.storage.local.set({ personalThresholds: thresholds });
+      console.log(
+        `[Personal] Thresholds updated — highScrolling: ${Math.round(thresholds.highScrolling)} | ` +
+        `fastScrolling: ${Math.round(thresholds.fastScrolling)} | ` +
+        `sessions: ${updated.length}`
+      );
+    } else {
+      console.log(`[Personal] Viable session added (${updated.length}/5 needed for personalization)`);
+    }
+  } catch (error) {
+    console.error('[Personal] Error updating viable sessions:', error);
+  }
+}
+
 // Save nudge outcome record
 // If a recent outcome for this session was 'closed', update it to 'closed_then_returned'
 async function saveNudgeOutcome(outcomeData) {
@@ -396,7 +495,7 @@ function calcEarnedCooldown(watchMs) {
   return 6 * 60 * 1000;                      // 10+ min  → 6 min cooldown
 }
 
-function analyzeSession(sessionData) {
+function analyzeSession(sessionData, personalThresholds = null) {
   if (!mlWindowState[sessionData.sessionId]) {
     mlWindowState[sessionData.sessionId] = {
       scrollDistance: 0,
@@ -524,11 +623,34 @@ function analyzeSession(sessionData) {
     bayesDoom = ((pScroll + pDuration + pEngagement) / 3) >= 0.6;
   }
 
+  // Apply personal thresholds if 5+ viable sessions exist
+  // Floor rule: personal threshold can only be HIGHER than hardcoded, never lower
+  // This means personalization only relaxes detection for heavy scrollers whose
+  // normal behavior genuinely exceeds the hardcoded defaults
+  const HARDCODED_HIGH_SCROLLING  = 10000;
+  const HARDCODED_FAST_SCROLLING  = 2000;
+
+  const hasPersonal = personalThresholds && personalThresholds.sessionCount >= 5;
+  const highScrollingThreshold = hasPersonal
+    ? Math.max(HARDCODED_HIGH_SCROLLING, personalThresholds.highScrolling)
+    : HARDCODED_HIGH_SCROLLING;
+  const fastScrollingThreshold = hasPersonal
+    ? Math.max(HARDCODED_FAST_SCROLLING, personalThresholds.fastScrolling)
+    : HARDCODED_FAST_SCROLLING;
+
+  if (hasPersonal) {
+    console.log(
+      `[Personal] Using personal thresholds — highScrolling: ${Math.round(highScrollingThreshold)} | ` +
+      `fastScrolling: ${Math.round(fastScrollingThreshold)} | ` +
+      `based on ${personalThresholds.sessionCount} viable sessions`
+    );
+  }
+
   const signals = {
     longDuration:   rawMinutes > 7.5,
-    highScrolling:  w.scrollDistance > 10000,
+    highScrolling:  w.scrollDistance > highScrollingThreshold,
     lowEngagement:  engagementScore < 0.5,
-    fastScrolling:  scrollIntensity > 2000,
+    fastScrolling:  scrollIntensity > fastScrollingThreshold,
     lowClickRate:   clickRate < 0.3 && rawMinutes > 7.5,
     shortsOverload: currentContext === 'shorts_feed' && w.shortsClicks > 18
   };
@@ -718,6 +840,62 @@ async function logNudge(sessionId, nudgeLevel, nudgeCount, durationMs) {
 }
 
 // Expose for testing
+// Injects 7 fake viable sessions into storage to test personalization thresholds
+// Usage: testPersonalization() — uses varied scroll distances to simulate real usage
+// Usage: testPersonalization('heavy') — simulates a heavy scroller (higher thresholds)
+// Usage: testPersonalization('light') — simulates a light scroller (floor rule kicks in)
+window.testPersonalization = async (profile = 'normal') => {
+  let sessions;
+
+  if (profile === 'heavy') {
+    // Heavy scroller — personal thresholds will be above hardcoded floor
+    sessions = [
+      { scrollDistance: 45000, scrollIntensity: 3200, durationMs: 15 * 60 * 1000 },
+      { scrollDistance: 38000, scrollIntensity: 2800, durationMs: 12 * 60 * 1000 },
+      { scrollDistance: 52000, scrollIntensity: 3600, durationMs: 18 * 60 * 1000 },
+      { scrollDistance: 41000, scrollIntensity: 3000, durationMs: 14 * 60 * 1000 },
+      { scrollDistance: 47000, scrollIntensity: 3400, durationMs: 16 * 60 * 1000 },
+      { scrollDistance: 39000, scrollIntensity: 2900, durationMs: 13 * 60 * 1000 },
+      { scrollDistance: 50000, scrollIntensity: 3500, durationMs: 17 * 60 * 1000 }
+    ];
+  } else if (profile === 'light') {
+    // Light scroller — personal thresholds below hardcoded, floor rule applies
+    sessions = [
+      { scrollDistance: 3000, scrollIntensity: 800, durationMs: 5 * 60 * 1000 },
+      { scrollDistance: 4000, scrollIntensity: 900, durationMs: 6 * 60 * 1000 },
+      { scrollDistance: 2500, scrollIntensity: 700, durationMs: 4 * 60 * 1000 },
+      { scrollDistance: 3500, scrollIntensity: 850, durationMs: 5 * 60 * 1000 },
+      { scrollDistance: 4500, scrollIntensity: 950, durationMs: 7 * 60 * 1000 },
+      { scrollDistance: 3200, scrollIntensity: 820, durationMs: 5 * 60 * 1000 },
+      { scrollDistance: 2800, scrollIntensity: 760, durationMs: 4 * 60 * 1000 }
+    ];
+  } else {
+    // Normal — mix of sessions, some above hardcoded floor
+    sessions = [
+      { scrollDistance: 18000, scrollIntensity: 2200, durationMs: 8 * 60 * 1000 },
+      { scrollDistance: 22000, scrollIntensity: 2600, durationMs: 10 * 60 * 1000 },
+      { scrollDistance: 15000, scrollIntensity: 1900, durationMs: 7 * 60 * 1000 },
+      { scrollDistance: 25000, scrollIntensity: 2800, durationMs: 11 * 60 * 1000 },
+      { scrollDistance: 19000, scrollIntensity: 2300, durationMs: 9 * 60 * 1000 },
+      { scrollDistance: 21000, scrollIntensity: 2500, durationMs: 10 * 60 * 1000 },
+      { scrollDistance: 17000, scrollIntensity: 2100, durationMs: 8 * 60 * 1000 }
+    ];
+  }
+
+  const viableSessions = sessions.map((s, i) => ({
+    ...s,
+    timestamp: Date.now() - (7 - i) * 24 * 60 * 60 * 1000 // spread over last 7 days
+  }));
+
+  const thresholds = calculatePersonalThresholds(viableSessions);
+  await browser.storage.local.set({ viableSessions, personalThresholds: thresholds });
+
+  console.log(`[testPersonalization] Profile: ${profile}`);
+  console.log(`[testPersonalization] highScrolling threshold: ${Math.round(thresholds.highScrolling)} (hardcoded: 10000, applied: ${Math.max(10000, thresholds.highScrolling).toFixed(0)})`);
+  console.log(`[testPersonalization] fastScrolling threshold: ${Math.round(thresholds.fastScrolling)} (hardcoded: 2000, applied: ${Math.max(2000, thresholds.fastScrolling).toFixed(0)})`);
+  console.log(`[testPersonalization] ${viableSessions.length} viable sessions injected — personalization is now active`);
+};
+
 window.testNudge = (level = 1) => {
   let durationMs;
   const nudgeCountBackup = nudgeCount;
