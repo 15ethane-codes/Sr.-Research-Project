@@ -452,26 +452,26 @@
       <h2>Set Your Check Frequency</h2>
       <p>How often should the tracker analyze your browsing? You can change this between sessions.</p>
       <div class="onboarding-options">
+        <button class="onboarding-option" data-value="2">
+          <span class="opt-label">2 min</span>
+          <span class="opt-desc">Aggressive</span>
+        </button>
         <button class="onboarding-option" data-value="5">
           <span class="opt-label">5 min</span>
           <span class="opt-desc">Recommended</span>
         </button>
         <button class="onboarding-option" data-value="10">
           <span class="opt-label">10 min</span>
-          <span class="opt-desc">Moderate</span>
-        </button>
-        <button class="onboarding-option" data-value="20">
-          <span class="opt-label">20 min</span>
-          <span class="opt-desc">Infrequent</span>
+          <span class="opt-desc">Relaxed</span>
         </button>
         <button class="onboarding-option" data-value="custom">
           <span class="opt-label">Custom</span>
-          <span class="opt-desc">5–25 min</span>
+          <span class="opt-desc">2–10 min</span>
         </button>
       </div>
       <div class="onboarding-custom-row" id="onboardingSliderRow" style="display:none;">
-        <input type="range" id="onboardingSlider" min="5" max="25" value="5">
-        <span id="onboardingSliderValue">5</span> min
+        <input type="range" id="onboardingSlider" min="2" max="10" value="2">
+        <span id="onboardingSliderValue">2</span> min
       </div>
       <button id="confirmInterval" disabled>Confirm</button>
     </div>
@@ -541,14 +541,14 @@
     <div class="interval-section" id="intervalSection">
       <div class="section-title">Check Frequency</div>
       <div class="interval-radios">
+        <label><input type="radio" name="mlInterval" value="2"> 2 min</label>
         <label><input type="radio" name="mlInterval" value="5"> 5 min</label>
         <label><input type="radio" name="mlInterval" value="10"> 10 min</label>
-        <label><input type="radio" name="mlInterval" value="20"> 20 min</label>
         <label><input type="radio" name="mlInterval" value="custom"> Custom</label>
       </div>
       <div class="interval-slider-row">
-        <input type="range" id="customSlider" min="5" max="25" value="5" disabled>
-        <span id="customValue">5</span> min
+        <input type="range" id="customSlider" min="2" max="10" value="2" disabled>
+        <span id="customValue">2</span> min
       </div>
       <div class="lock-status" id="lockStatus">
         <span class="lock-icon">🔒</span>

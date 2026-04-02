@@ -54,15 +54,15 @@ function showIntervalPicker(previousValue, currentSessionId) {
 
   let selectedValue = previousValue;
 
-  if ([5, 10, 20].includes(previousValue)) {
+  if ([2, 5, 10].includes(previousValue)) {
     const match = document.querySelector(`.onboarding-option[data-value="${previousValue}"]`);
     if (match) match.classList.add('selected');
     sliderRow.style.display = 'none';
   } else {
     const customOpt = document.querySelector('.onboarding-option[data-value="custom"]');
     if (customOpt) customOpt.classList.add('selected');
-    slider.value = previousValue;
-    sliderVal.textContent = previousValue;
+    slider.value = Math.min(Math.max(previousValue, 2), 10);
+    sliderVal.textContent = slider.value;
     sliderRow.style.display = 'flex';
   }
 
@@ -461,14 +461,14 @@ async function setupIntervalControls() {
   const saved  = result.mlInterval || 5;
   const locked = result.intervalLocked || false;
 
-  if ([5, 10, 20].includes(saved)) {
+  if ([2, 5, 10].includes(saved)) {
     document.querySelector(`input[name="mlInterval"][value="${saved}"]`).checked = true;
     slider.disabled = true;
   } else {
     document.querySelector('input[name="mlInterval"][value="custom"]').checked = true;
     slider.disabled = false;
-    slider.value = saved;
-    customValue.textContent = saved;
+    slider.value = Math.min(Math.max(saved, 2), 10); // clamp to new range
+    customValue.textContent = slider.value;
   }
 
   applyLockState(locked, saved);
@@ -506,7 +506,7 @@ function applyLockState(locked, activeValue) {
   if (locked) {
     section.classList.add('locked');
     lockStatus.classList.add('visible');
-    const display = [5, 10, 20].includes(activeValue)
+    const display = [2, 5, 10].includes(activeValue)
       ? `${activeValue} min`
       : `${activeValue} min (custom)`;
     lockText.textContent = `Active: ${display} — locked during session`;
