@@ -1,16 +1,18 @@
 {
   "manifest_version": 2,
   "name": "YouTube Scrolling Tracker",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Tracks YouTube scrolling behavior and detects doomscrolling patterns",
-  
+
   "permissions": [
     "storage",
     "tabs",
     "notifications",
     "*://*.youtube.com/*"
   ],
-  
+
+  "content_security_policy": "script-src 'self' https://cdn.jsdelivr.net; object-src 'self'",
+
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
@@ -19,17 +21,17 @@
       "all_frames": false
     }
   ],
-  
+
   "background": {
     "scripts": ["background/background.js", "background/model.js"],
     "persistent": true
   },
-  
+
   "browser_action": {
     "default_popup": "popup.html",
     "default_title": "YouTube Scrolling Stats"
   },
-  
+
   "applications": {
     "gecko": {
       "strict_min_version": "57.0"
