@@ -1,4 +1,4 @@
-// Version 1.7.0
+// Version 2.1.0
 console.log('Background script loaded and ready');
 
 let nudgeLevel = 0;
@@ -44,6 +44,85 @@ browser.storage.local.get(['mlInterval']).then(result => {
   }
   // mlCalculationInterval = result.mlInterval || 5; // uncomment when shipping
 }).catch(err => console.warn('[Interval] Could not load interval from storage:', err));
+
+// ---- USE CLASSIFICATION SYSTEM (background context — no CSP restrictions) ----
+let useModel = null;
+let useModelLoading = false;
+let anchorEmbeddings = null;
+
+const ANCHOR_PHRASES = {
+  productive:   'educational tutorial learning how to skill development documentary lecture',
+  neutral:      'entertainment music gaming lifestyle vlog travel cooking sports',
+  unproductive: 'mindless scrolling funny compilation reaction clickbait fails prank endless shorts'
+};
+
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot   += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+async function loadUSEModel() {
+  if (useModel || useModelLoading) return;
+  useModelLoading = true;
+  try {
+    // Import TensorFlow.js and USE via importScripts — works in background service worker context
+    importScripts(
+      'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js',
+      'https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3/dist/universal-sentence-encoder.min.js'
+    );
+    useModel = await use.load();
+
+    // Pre-embed anchor phrases once
+    const anchors    = Object.values(ANCHOR_PHRASES);
+    const embeddings = await useModel.embed(anchors);
+    const arr        = await embeddings.array();
+    embeddings.dispose();
+
+    anchorEmbeddings = {
+      productive:   arr[0],
+      neutral:      arr[1],
+      unproductive: arr[2]
+    };
+    console.log('[USE] Model loaded and anchors embedded in background');
+  } catch (err) {
+    console.warn('[USE] Failed to load model in background:', err);
+    useModel = null;
+  }
+  useModelLoading = false;
+}
+
+async function classifyTitleInBackground(title) {
+  if (!useModel || !anchorEmbeddings) return 'neutral';
+  try {
+    const embeddings = await useModel.embed([title]);
+    const titleVec   = (await embeddings.array())[0];
+    embeddings.dispose();
+
+    const scores = {
+      productive:   cosineSimilarity(titleVec, anchorEmbeddings.productive),
+      neutral:      cosineSimilarity(titleVec, anchorEmbeddings.neutral),
+      unproductive: cosineSimilarity(titleVec, anchorEmbeddings.unproductive)
+    };
+
+    const label = Object.keys(scores).reduce((a, b) => scores[a] > scores[b] ? a : b);
+    console.log(
+      `[USE] "${title.substring(0, 50)}" → ${label} ` +
+      `(P:${scores.productive.toFixed(3)} N:${scores.neutral.toFixed(3)} U:${scores.unproductive.toFixed(3)})`
+    );
+    return label;
+  } catch (err) {
+    console.warn('[USE] Classification failed:', err);
+    return 'neutral';
+  }
+}
+
+// Load model on startup
+loadUSEModel();
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received from content script:', message.action);
@@ -194,6 +273,15 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const sessionId = activeTabId ? tabSessions[activeTabId] : null;
     sendResponse({ sessionId });
     return false;
+  }
+
+  // Classify video title using USE model running in background context
+  // Avoids YouTube's strict CSP which blocks TensorFlow.js in content scripts
+  if (message.action === 'classifyVideoTitle') {
+    classifyTitleInBackground(message.title || '').then(label => {
+      sendResponse({ label });
+    });
+    return true; // async response
   }
 
   // Content script notifies when resistance period naturally expires
@@ -482,17 +570,32 @@ function formatDuration(durationMs) {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-function predictDoomscrollProbability(features) {
-  return Math.min(1, features.scrollIntensity / 5000 + features.engagementScore / 2);
-}
+// predictDoomscrollProbability is defined in model.js
 
-// Calculate earned cooldown duration based on continuous watch time
-function calcEarnedCooldown(watchMs) {
+// Calculate earned cooldown based on actual watch time and content classification
+// Productive content earns more cooldown — user was intentionally learning
+// Unproductive content earns less — watching compilations != genuine engagement
+function calcEarnedCooldown(watchMs, contentLabel = 'neutral') {
   const watchMin = watchMs / 1000 / 60;
-  if (watchMin < 2)  return 0;               // under 2 min — no cooldown earned
-  if (watchMin < 5)  return 1 * 60 * 1000;   // 2-5 min  → 1 min cooldown
-  if (watchMin < 10) return 3 * 60 * 1000;   // 5-10 min → 3 min cooldown
-  return 6 * 60 * 1000;                      // 10+ min  → 6 min cooldown
+  if (watchMin < 2) return 0; // under 2 min — no cooldown regardless of content
+
+  // Cooldown multipliers by content label
+  const multiplier = contentLabel === 'productive' ? 1.33
+                   : contentLabel === 'unproductive' ? 0.5
+                   : 1.0; // neutral
+
+  let baseCooldownMs;
+  if (watchMin < 5)  baseCooldownMs = 1 * 60 * 1000;   // 2-5 min base
+  else if (watchMin < 10) baseCooldownMs = 3 * 60 * 1000; // 5-10 min base
+  else baseCooldownMs = 6 * 60 * 1000;                  // 10+ min base
+
+  const earned = Math.round(baseCooldownMs * multiplier);
+  console.log(
+    `[Cooldown] calcEarnedCooldown — watchMin: ${watchMin.toFixed(1)} | ` +
+    `label: ${contentLabel} | multiplier: ${multiplier} | ` +
+    `earned: ${(earned / 1000 / 60).toFixed(1)}min`
+  );
+  return earned;
 }
 
 function analyzeSession(sessionData, personalThresholds = null) {
@@ -553,21 +656,29 @@ function analyzeSession(sessionData, personalThresholds = null) {
     // Not watching video
     // Detect transition: were we just watching? If so, calculate and award cooldown
     if (w.lastContext === 'watching_video' && w.currentWatchStart !== null) {
-      const finalWatchMs = now - w.currentWatchStart;
-      const earned = calcEarnedCooldown(finalWatchMs);
+      // Use actualWatchTime from content script (real playback time via pause/play events)
+      // Falls back to context-based timing if actualWatchTime not available
+      const actualWatchMs = sessionData.actualWatchTime || (now - w.currentWatchStart);
+      const contentLabel  = sessionData.lastVideoLabel || 'neutral';
+      console.log(
+        `[Cooldown] actualWatchTime from session: ${Math.round((sessionData.actualWatchTime || 0) / 1000)}s | ` +
+        `fallback contextTime: ${Math.round((now - w.currentWatchStart) / 1000)}s | ` +
+        `using: ${Math.round(actualWatchMs / 1000)}s | label: ${contentLabel}`
+      );
+      const earned        = calcEarnedCooldown(actualWatchMs, contentLabel);
 
       if (earned > 0) {
         w.cooldownUntil = now + earned;
         console.log(
-          `[Cooldown] Earned ${earned / 1000}s cooldown after watching ` +
-          `${(finalWatchMs / 1000 / 60).toFixed(1)}min | ` +
-          `expires at +${earned / 1000}s | ` +
+          `[Cooldown] Earned ${(earned / 1000 / 60).toFixed(1)}min cooldown | ` +
+          `actualWatch: ${(actualWatchMs / 1000 / 60).toFixed(1)}min | ` +
+          `label: ${contentLabel} | ` +
           `session ...${sessionData.sessionId.slice(-8)}`
         );
       } else {
         console.log(
-          `[Cooldown] No cooldown — watch was only ` +
-          `${(finalWatchMs / 1000 / 60).toFixed(1)}min (< 2 min threshold)`
+          `[Cooldown] No cooldown — actualWatch was only ` +
+          `${(actualWatchMs / 1000 / 60).toFixed(1)}min (< 2 min threshold)`
         );
       }
 
@@ -615,18 +726,7 @@ function analyzeSession(sessionData, personalThresholds = null) {
   const mlFeatures      = { scrollIntensity, engagementScore, durationMinutes: rollingMinutes };
   const doomProb        = predictDoomscrollProbability(mlFeatures);
 
-  let bayesDoom = false;
-  if (doomProb < 0.65) {
-    const pScroll      = scrollIntensity > 2000 ? 0.7 : 0.3;
-    const pDuration    = rawMinutes > 20 ? 0.7 : 0.3;
-    const pEngagement  = engagementScore < 0.5 ? 0.6 : 0.4;
-    bayesDoom = ((pScroll + pDuration + pEngagement) / 3) >= 0.6;
-  }
-
-  // Apply personal thresholds if 5+ viable sessions exist
-  // Floor rule: personal threshold can only be HIGHER than hardcoded, never lower
-  // This means personalization only relaxes detection for heavy scrollers whose
-  // normal behavior genuinely exceeds the hardcoded defaults
+  // Personal thresholds — defined here so both Bayesian and signals can use them
   const HARDCODED_HIGH_SCROLLING  = 10000;
   const HARDCODED_FAST_SCROLLING  = 2000;
 
@@ -643,6 +743,45 @@ function analyzeSession(sessionData, personalThresholds = null) {
       `[Personal] Using personal thresholds — highScrolling: ${Math.round(highScrollingThreshold)} | ` +
       `fastScrolling: ${Math.round(fastScrollingThreshold)} | ` +
       `based on ${personalThresholds.sessionCount} viable sessions`
+    );
+  }
+
+  // ---- BAYESIAN FALLBACK ----
+  // Uses three features independent from rule-based and ML systems:
+  // 1. Scroll intensity vs personal/hardcoded threshold (behavior signal)
+  // 2. Watch ratio — actual watch time vs session duration (intentionality signal)
+  // 3. Content label from USE classification (content signal)
+  // Only fires when doomProb < 0.65 to act as genuine fallback
+  let bayesDoom = false;
+  if (doomProb < 0.65) {
+    // P(high scroll) — uses personal threshold if available, hardcoded otherwise
+    const effectiveScrollThreshold = hasPersonal
+      ? Math.max(HARDCODED_FAST_SCROLLING, personalThresholds.fastScrolling)
+      : HARDCODED_FAST_SCROLLING;
+    const pScroll = scrollIntensity > effectiveScrollThreshold ? 0.75 : 0.25;
+
+    // P(low watch ratio) — if user spent little time actually watching vs total session
+    // Low ratio means mostly scrolling, high ratio means intentional viewing
+    const watchRatio = rawDurationMs > 0
+      ? (sessionData.actualWatchTime || 0) / rawDurationMs
+      : 0;
+    const pLowWatch = watchRatio < 0.3 ? 0.70 : watchRatio < 0.6 ? 0.45 : 0.20;
+
+    // P(unproductive content) — USE classification of current/last video
+    const videoLabel = sessionData.currentVideoLabel || sessionData.lastVideoLabel || 'neutral';
+    const pUnproductive = videoLabel === 'unproductive' ? 0.75
+                        : videoLabel === 'neutral'      ? 0.50
+                        : 0.20; // productive content reduces probability
+
+    // Naive Bayes — treat as independent evidence, average likelihoods
+    const bayesScore = (pScroll + pLowWatch + pUnproductive) / 3;
+    bayesDoom = bayesScore >= 0.55;
+
+    console.log(
+      `[Bayes] pScroll: ${pScroll.toFixed(2)} (intensity: ${scrollIntensity.toFixed(0)} vs thresh: ${effectiveScrollThreshold}) | ` +
+      `pLowWatch: ${pLowWatch.toFixed(2)} (watchRatio: ${(watchRatio * 100).toFixed(0)}%) | ` +
+      `pUnproductive: ${pUnproductive.toFixed(2)} (label: ${videoLabel}) | ` +
+      `score: ${bayesScore.toFixed(3)} => bayesDoom: ${bayesDoom}`
     );
   }
 
