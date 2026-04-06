@@ -10,8 +10,8 @@ if (!window.location.hostname.includes('youtube.com')) {
 // INITIAL STATE
 let scrollData = {
   startTime: Date.now(),
-  sessionId: null,          // assigned by background
-  resumeOffset: 0,          // prior session duration carried over from snapshot
+  sessionId: null,
+  resumeOffset: 0,
   scrollEvents: [],
   videoClicks: 0,
   shortsClicks: 0,
@@ -21,9 +21,88 @@ let scrollData = {
   currentVideo: null,
   currentContext: 'unknown',
   timeInShorts: 0,
-  timeWatchingVideo: 0,
-  lastContextChange: Date.now()
+  timeWatchingVideo: 0,   // kept for backwards compat with popup display
+  lastContextChange: Date.now(),
+  actualWatchTime: 0,     // real playback time from pause/play events (replaces timeWatchingVideo for cooldown)
+  currentVideoLabel: 'neutral', // USE classification of currently watched video
+  lastVideoLabel: 'neutral'     // classification of last watched video (used at context transition)
 };
+
+// ---- USE CLASSIFICATION ----
+// Runs in background.js to avoid YouTube's strict CSP
+// Content script sends title to background, receives label back
+async function classifyTitle(title) {
+  try {
+    const response = await browser.runtime.sendMessage({
+      action: 'classifyVideoTitle',
+      title: title
+    });
+    const label = (response && response.label) ? response.label : 'neutral';
+    console.log(`[USE] "${title.substring(0, 50)}" → ${label}`);
+    return label;
+  } catch (err) {
+    console.warn('[USE] Classification request failed, defaulting to neutral:', err);
+    return 'neutral';
+  }
+}
+
+// ---- PLAYBACK TRACKING ----
+// Samples video.currentTime every second to measure actual watch time
+// Avoids relying on play/pause events which YouTube fires spuriously
+let currentVideoElement = null;
+let videoElementObserver = null;
+let lastSampledTime = null;      // last video.currentTime value seen
+let playbackSampleInterval = null;
+
+function attachPlaybackListeners(videoEl) {
+  if (currentVideoElement === videoEl) return;
+  currentVideoElement = videoEl;
+  lastSampledTime = null;
+
+  // Clear any existing sampling interval
+  if (playbackSampleInterval) clearInterval(playbackSampleInterval);
+
+  // Sample currentTime every second
+  // If currentTime advanced since last sample, video was playing — add the delta
+  playbackSampleInterval = setInterval(() => {
+    if (!currentVideoElement) return;
+    const ct = currentVideoElement.currentTime;
+    if (lastSampledTime !== null && ct > lastSampledTime) {
+      const delta = ct - lastSampledTime;
+      // Cap delta at 1.5s to avoid counting large jumps (seeking)
+      if (delta < 1.5) {
+        scrollData.actualWatchTime += delta * 1000;
+      }
+    }
+    lastSampledTime = ct;
+  }, 1000);
+
+  console.log('[Playback] Sampling started for video element');
+}
+
+function stopPlaybackSampling() {
+  if (playbackSampleInterval) {
+    clearInterval(playbackSampleInterval);
+    playbackSampleInterval = null;
+  }
+  lastSampledTime = null;
+  currentVideoElement = null;
+}
+
+// Poll for video element — YouTube injects it after navigation
+function watchForVideoElement() {
+  if (videoElementObserver) videoElementObserver.disconnect();
+  videoElementObserver = new MutationObserver(() => {
+    const videoEl = document.querySelector('video.html5-main-video') ||
+                    document.querySelector('video');
+    if (videoEl) attachPlaybackListeners(videoEl);
+  });
+  videoElementObserver.observe(document.body, { subtree: true, childList: true });
+
+  const videoEl = document.querySelector('video.html5-main-video') ||
+                  document.querySelector('video');
+  if (videoEl) attachPlaybackListeners(videoEl);
+}
 
 // SESSION HANDSHAKE
 // Background returns { sessionId, snapshot }
@@ -198,16 +277,39 @@ function trackVideoNavigation() {
       scrollData.videoClicks++;
       lastWatchedVideoId = videoId;
 
-      setTimeout(() => {
+      // Reset actual watch time for new video and restart sampling
+      scrollData.actualWatchTime = 0;
+      watchForVideoElement();
+
+      setTimeout(async () => {
         const titleElement = document.querySelector('h1.ytd-watch-metadata yt-formatted-string') ||
                              document.querySelector('h1.title yt-formatted-string') ||
                              document.querySelector('h1 yt-formatted-string');
-        const title = titleElement ? titleElement.textContent.trim() : 'Unknown Video';
+        const rawTitle = titleElement ? titleElement.textContent.trim() : '';
+
+        // Wait longer if title not loaded yet — YouTube loads it asynchronously
+        const title = rawTitle || await new Promise(resolve => {
+          let attempts = 0;
+          const interval = setInterval(() => {
+            const el = document.querySelector('h1.ytd-watch-metadata yt-formatted-string') ||
+                       document.querySelector('h1.title yt-formatted-string') ||
+                       document.querySelector('h1 yt-formatted-string');
+            const t = el ? el.textContent.trim() : '';
+            attempts++;
+            if (t || attempts >= 10) { clearInterval(interval); resolve(t || 'Unknown Video'); }
+          }, 500);
+        });
+
+        // Classify title using USE — async, falls back to neutral
+        const label = await classifyTitle(title);
+        scrollData.currentVideoLabel = label;
+        console.log('[USE] Current video label set to:', label);
 
         scrollData.videoInteractions.push({
           timestamp: Date.now(),
           videoUrl: url,
           videoTitle: title.substring(0, 100),
+          videoLabel: label,
           scrollPosition: window.scrollY,
           type: 'video',
           context: scrollData.currentContext
@@ -282,7 +384,14 @@ function updateContext() {
   else if (url.includes('/feed/subscriptions')) scrollData.currentContext = 'subscriptions';
   else scrollData.currentContext = 'other';
 
-  if (previousContext === 'watching_video') scrollData.timeWatchingVideo += now - scrollData.lastContextChange;
+  if (previousContext === 'watching_video') {
+    scrollData.timeWatchingVideo += now - scrollData.lastContextChange;
+    // Stop sampling when leaving watch page
+    stopPlaybackSampling();
+    // Save label of finished video for cooldown calculation
+    scrollData.lastVideoLabel = scrollData.currentVideoLabel;
+    console.log('[Playback] Left watch page, finalActualWatchTime:', Math.round(scrollData.actualWatchTime / 1000) + 's');
+  }
   if (previousContext === 'shorts_feed') scrollData.timeInShorts += now - scrollData.lastContextChange;
 
   scrollData.lastContextChange = now;
@@ -322,6 +431,9 @@ function saveScrollData() {
   const elapsedThisLoad = Date.now() - scrollData.startTime;
   const sessionDuration = scrollData.resumeOffset + elapsedThisLoad;
 
+  // actualWatchTime is maintained by the 1-second sampling interval
+  const currentActualWatch = scrollData.actualWatchTime;
+
   const sessionData = {
     sessionId: scrollData.sessionId,
     startTime: scrollData.startTime,
@@ -336,7 +448,10 @@ function saveScrollData() {
     currentContext: scrollData.currentContext,
     timeInShorts: scrollData.timeInShorts,
     timeWatchingVideo: scrollData.timeWatchingVideo,
-    sessionDuration: sessionDuration,   // accurate running total
+    actualWatchTime: currentActualWatch,        // real playback time from pause/play events
+    lastVideoLabel: scrollData.lastVideoLabel,  // USE classification of last finished video
+    currentVideoLabel: scrollData.currentVideoLabel,
+    sessionDuration: sessionDuration,
     url: window.location.href,
     timestamp: Date.now(),
     scrollPauseCount: scrollPauseCount,
@@ -349,7 +464,9 @@ function saveScrollData() {
     context: scrollData.currentContext,
     scrolls: scrollData.scrollEvents.length,
     videos: scrollData.videoClicks,
-    shorts: scrollData.shortsClicks
+    shorts: scrollData.shortsClicks,
+    actualWatchTime: Math.round(currentActualWatch / 1000) + 's',
+    videoLabel: scrollData.lastVideoLabel
   });
 
   browser.runtime.sendMessage({ action: 'saveScrollData', data: sessionData })
