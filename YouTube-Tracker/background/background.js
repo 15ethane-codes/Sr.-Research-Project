@@ -45,7 +45,42 @@ browser.storage.local.get(['mlInterval']).then(result => {
   // mlCalculationInterval = result.mlInterval || 5; // uncomment when shipping
 }).catch(err => console.warn('[Interval] Could not load interval from storage:', err));
 
-// ---- USE CLASSIFICATION SYSTEM (background context — no CSP restrictions) ----
+// ---- ML MODEL FOR DOOMSCROLL PREDICTION ----
+const scaler = {
+  mean: [1686.1593, 0.5569846, 23.7],
+  std:  [1571.9131, 0.5189293, 13.1061054]
+};
+
+const lrModel = {
+  weights: [1.60056473, -0.34815377, 2.17577448],
+  bias: 0.13098922
+};
+
+function standardize(x, i) {
+  return (x - scaler.mean[i]) / scaler.std[i];
+}
+
+function sigmoid(z) {
+  return 1 / (1 + Math.exp(-z));
+}
+
+function predictDoomscrollProbability(features) {
+  const x = [
+    features.scrollIntensity,
+    features.engagementScore,
+    features.durationMinutes
+  ];
+
+  let z = lrModel.bias;
+
+  for (let i = 0; i < x.length; i++) {
+    z += lrModel.weights[i] * standardize(x[i], i);
+  }
+
+  return sigmoid(z); // probability of doomscrolling (test run)
+}
+
+// ---- USE CLASSIFICATION SYSTEM (service worker context) ----
 let useModel = null;
 let useModelLoading = false;
 let anchorEmbeddings = null;
@@ -70,17 +105,15 @@ async function loadUSEModel() {
   if (useModel || useModelLoading) return;
   useModelLoading = true;
   try {
-    // Import TensorFlow.js and USE via importScripts — works in background service worker context
-    importScripts(
-      'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js',
-      'https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3/dist/universal-sentence-encoder.min.js'
-    );
-    useModel = await use.load();
+    // Dynamic import of TensorFlow.js and USE for service worker
+    const tf = await import('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js');
+    const useModule = await import('https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3');
+    
+    useModel = await useModule.load();
 
-    // Pre-embed anchor phrases once
-    const anchors    = Object.values(ANCHOR_PHRASES);
+    const anchors = Object.values(ANCHOR_PHRASES);
     const embeddings = await useModel.embed(anchors);
-    const arr        = await embeddings.array();
+    const arr = await embeddings.array();
     embeddings.dispose();
 
     anchorEmbeddings = {
@@ -88,13 +121,14 @@ async function loadUSEModel() {
       neutral:      arr[1],
       unproductive: arr[2]
     };
-    console.log('[USE] Model loaded and anchors embedded in background');
+    console.log('[USE] Model loaded via dynamic import in service worker');
   } catch (err) {
-    console.warn('[USE] Failed to load model in background:', err);
+    console.error('[USE] Failed to load model:', err);
     useModel = null;
   }
   useModelLoading = false;
 }
+
 
 async function classifyTitleInBackground(title) {
   if (!useModel || !anchorEmbeddings) return 'neutral';
@@ -123,6 +157,7 @@ async function classifyTitleInBackground(title) {
 
 // Load model on startup
 loadUSEModel();
+
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('Message received from content script:', message.action);
@@ -153,7 +188,7 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sessionId = 'session_' + now + '_' + Math.random().toString(36).substr(2, 9);
       sessionRuleStates[sessionId] = false;
       delete mlWindowState[sessionId];
-      // Genuinely new session — clear lock, confirmation, and any active level 3 resistance
+      // Genuinely NEW session — clear lock, confirmation, and any active level 3 resistance
       browser.storage.local.set({
         intervalLocked: false,
         intervalConfirmedForSession: null
